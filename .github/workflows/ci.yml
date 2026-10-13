@@ -28,6 +28,72 @@ jobs:
           bash -n src/CloverSec-CTF-Pack/scripts/verify.sh
           shellcheck -S warning src/CloverSec-CTF-Pack/scripts/verify.sh
 
+      # 附件题路径不需要构建镜像，用它覆盖不依赖 Docker 的判定：
+      # 八节顺延的附件手册判 passed；--expect-flag 不一致判 failed；手册留 TODO 判 partial；
+      # 内部工作文件判 failed；垃圾文件提示里的反斜杠不能弄坏 JSON 报告；解题卡住要按超时结束。
+      - name: verify.sh regression (attachment fixture)
+        run: |
+          set -euo pipefail
+          V=$PWD/src/CloverSec-CTF-Pack/scripts/verify.sh
+          W=$(mktemp -d)
+          D="$W/att-fixture"
+          mkdir -p "$D/附件" "$D/solve" "$D/README"
+          echo x > "$D/附件/blob.bin"
+          printf 'print("flag{regression_value}")\n' > "$D/solve/solve.py"
+          {
+            echo '# att-fixture'; echo
+            echo '## 1 题目设计部署信息'; echo
+            for s in 1.1 1.2 1.3 1.4; do echo "### $s 节"; echo 内容; echo; done
+            echo '### 1.5 旗帜信息'; echo '平台覆盖方式：无'; echo 'flag文件位置：/flag'; echo
+            echo '### 1.6 题目情况'; echo '端口：无'; echo
+            echo '### 1.7 题目设计'; echo 内容; echo
+            echo '### 1.8 解题步骤'; echo 内容
+          } > "$D/README/att-fixture.md"
+
+          # 1. 八节顺延骨架 + expect 一致 → passed
+          bash "$V" "$D" --expect-flag 'flag{regression_value}' --report "$W/r1.json" >"$W/o1" 2>&1
+          grep -q '^== 结果: passed' "$W/o1"
+
+          # 2. expect 不一致 → failed
+          if bash "$V" "$D" --expect-flag 'flag{wrong_value}' --report "$W/r2.json" >"$W/o2" 2>&1; then
+            echo "expect-flag mismatch should have failed"; cat "$W/o2"; exit 1
+          fi
+          grep -q '与 --expect-flag 不一致' "$W/o2"
+
+          # 3. 手册留 TODO → partial
+          echo 'TODO(人工填写)' >> "$D/README/att-fixture.md"
+          if bash "$V" "$D" --expect-flag 'flag{regression_value}' --report "$W/r3.json" >"$W/o3" 2>&1; then
+            echo "handbook TODO should not pass"; cat "$W/o3"; exit 1
+          fi
+          grep -q 'TODO(人工填写)' "$W/o3"
+
+          # 4. 内部工作文件落在交付根 → failed
+          printf 'notes\n' > "$D/_internal.md"
+          if bash "$V" "$D" --report "$W/r4.json" >"$W/o4" 2>&1; then
+            echo "internal working file should fail"; cat "$W/o4"; exit 1
+          fi
+          grep -q '_internal.md' "$W/o4"
+
+          # 5. 非数字 --timeout 直接退出码 2
+          if bash "$V" "$D" --timeout abc >"$W/o5" 2>&1; then
+            echo "non-numeric --timeout should exit 2"; exit 1
+          fi
+          grep -q '需要整数秒' "$W/o5"
+
+          # 6. 垃圾文件 + --report → 报告仍是合法 JSON
+          rm -f "$D/_internal.md"; touch "$D/附件/.DS_Store"
+          bash "$V" "$D" --report "$W/r6.json" >"$W/o6" 2>&1 || true
+          python3 -m json.tool "$W/r6.json" >/dev/null
+
+          # 7. 解题卡住 → 按 --solve-timeout 结束并判 failed
+          printf 'import time\ntime.sleep(600)\n' > "$D/solve/solve.py"
+          if timeout 60 bash "$V" "$D" --solve-timeout 3 >"$W/o7" 2>&1; then
+            echo "hanging solve should fail"; cat "$W/o7"; exit 1
+          fi
+          grep -q '秒没结束' "$W/o7"
+
+          echo "verify.sh regression OK"
+
       # 确认这个目录能被 skills 工具识别为一个合法 Skill。
       - name: Skill discovery
         run: npx -y skills add . --list

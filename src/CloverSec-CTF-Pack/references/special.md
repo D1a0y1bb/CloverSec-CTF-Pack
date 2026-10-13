@@ -12,7 +12,40 @@
 
 输入带 `docker-compose.yml`，或题目需要 web + db + redis 等多个容器。
 
-nginx + php-fpm + redis + MySQL 这类能放进一个容器的，用单容器。start.sh 照下面的模板写，五段按题目删减：
+### 平台只收单容器时，把服务装进同一镜像
+
+四叶草平台一个容器一个入口。原题是 compose 多服务时，**正确做法是把原来每个服务原样装进同一个镜像，不是把服务合并掉**。
+
+```
+原题 compose                        交付的单个镜像
+├── nginx        ─┐
+├── php-fpm      ─┼─ 全部装进同一镜像，沿用原配置文件，版本按原题锁死
+├── mariadb      ─┤   start.sh 先起依赖、等就绪，再 exec 对外主服务
+└── admin-panel  ─┘
+```
+
+**不算降级的**：把 nginx、php-fpm、MariaDB 装进同一个镜像，配置沿用原文件，版本不变。
+
+**算降级的**（必须先问用户）：把 nginx + php-fpm 换成 `php:*-apache`；把 php-fpm 换成 mod_php；把 MariaDB 换成 SQLite；删掉 admin-panel；升级 PHP / Node / JDK 的大版本。
+
+判断标准很简单：**选手打的那条链，经过的每一层是不是还在。** 原题要过 nginx 的 location 匹配再进 php-fpm，交付里就必须还有 nginx 和 php-fpm。
+
+### 服务层要逐项对照
+
+改 Dockerfile 前后各列一次对照表，写进 `provenance.service_parity`：
+
+```text
+原题 compose         交付镜像
+nginx:1.25.2         nginx 1.25.2（apt 装，配置文件沿用 src/nginx.conf）
+php:5.6.33-fpm       php-fpm 5.6.33（配置文件沿用 src/sandbox.ini）
+mariadb:10.4         mariadb 10.4（同一镜像，init.sql 沿用 src/install.sql）
+```
+
+对不上的那一行就是要停下来问用户的地方。
+
+### start.sh 模板
+
+五段按题目删减。这一段是"一个容器里跑多个进程"，和上面说的"不要把多个服务合并成一个服务"是两件事。
 
 ```bash
 #!/bin/bash
@@ -46,14 +79,14 @@ trap 'kill -TERM "$MAIN_PID" 2>/dev/null; mysqladmin shutdown 2>/dev/null' TERM 
 sync_flag() {
     local value
     value=$(sed "s/\\\\/\\\\\\\\/g; s/'/''/g" /flag)
-    mysql ctf -e "UPDATE flag SET value='${value}' WHERE id=1;"
+    mysql ctf -e "UPDATE flag SET value='${value}' WHERE id=1;" || { log "flag sync FAILED"; return 1; }
     log "flag synced"
 }
-sync_flag
+sync_flag || log "首次同步失败，循环会重试"
 last=$(cksum < /flag)
 while kill -0 "$MAIN_PID" 2>/dev/null; do
     now=$(cksum < /flag)
-    [ "$now" != "$last" ] && { sync_flag; last=$now; }
+    [ "$now" != "$last" ] && { sync_flag && last=$now; }
     sleep 1
 done
 
@@ -62,11 +95,12 @@ wait "$MAIN_PID"
 ```
 
 - 第 5 段只在 Flag 存在数据库或配置文件里时需要；Flag 直接从 `/flag` 读的题删掉第 5 段，最后一行改成 `exec` 主服务。
+- **同步失败要能看见。** 不要写 `|| true` 把错误吞掉，也不要把目标文件设成 `chmod 444`——下一轮同步会写不进去，选手拿到的永远是占位值。
 - 后台服务不要把日志重定向到 `/tmp/*.log`，排查时 `docker logs` 看不到。
 - 主服务是 `catalina.sh run`、`apache2-foreground` 这类前台命令时，第 4 段把它放后台即可。
 - 排查时用 `verify.sh <题目目录> --keep` 保留容器，再 `docker logs -f <容器>` 看所有进程的输出。
 
-必须多容器时保留 `docker-compose.yml`，每个服务一个 Dockerfile，手册写清 Flag 写进哪个服务的哪个路径。verify.sh 只验证单容器，compose 题用 `docker compose up` 手动验证。
+必须保留多容器时，保留 `docker-compose.yml`，每个服务一个 Dockerfile，手册写清 Flag 写进哪个服务的哪个路径，并在交付说明里说明平台侧要额外支持 compose。`verify.sh` 只验证单容器，compose 题用 `docker compose up` 手动验证。
 
 ## CMS / 老框架题（源码完整但缺原题数据库快照）
 
@@ -261,6 +295,8 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 
 拿到 `ok: False`（初始环境有漏洞）是**通过**；拿到 `ok: True` 反而说明题目初始状态不对——漏洞初始就修好了，选手没得打——要报出来。
 
+**判题脚本没能执行会判 `failed`，不算"有漏洞"。** 退出码 126（没有执行权限）、127（路径或命令找不到），以及返回非 0 但输出里没有 `ok: False` / `RESULT: FAIL` 判定行的（`check.py` 缺依赖崩掉这类），都按配置错误处理。`check` 路径写错、`check.sh` 忘了 `chmod +x` 时返回码恰好非 0，不单独判掉就会被当成 RDG 的预期结果。
+
 ### 手册
 
 RDG 手册的重点和普通题不同，见 [manual.md](manual.md)：
@@ -276,7 +312,39 @@ RDG 手册的重点和普通题不同，见 [manual.md](manual.md)：
 
 ## Linux kernel / QEMU guest 题
 
-内核 CVE/LPE 题，用 QEMU 起 guest。这类题的 Flag 在 guest 内部，host 层的 `changeflag.sh` 只写 host 文件、guest 看不到——Flag 要写进 rootfs 或由 guest 启动脚本读取。构建和手动验证流程见 v3.0.1 的 [`docs/linux_qemu_manual_validation.md`](https://github.com/D1a0y1bb/CloverSec-CTF-Pack/blob/v3.0.1/src/CloverSec-CTF-Build-Dockerizer/docs/linux_qemu_manual_validation.md)。
+内核 CVE/LPE 题，用 QEMU 起 guest。常见形态是**容器里塞一个 QEMU**：平台只看到一个容器，guest 在容器内部的 QEMU 里跑。
+
+这类题的 Flag 在 guest 内部，host 层的 `changeflag.sh` 只写 host 文件、guest 看不到——Flag 要写进 rootfs（或 FAT 分区），或者由 guest 的启动脚本从共享位置读。
+
+### Flag 同步的校验清单
+
+平台是**容器起来之后**才写 `/flag` 的，所以容器启动时搬一次是不够的。逐条核对：
+
+1. **同步循环要一直跑**，不能只在启动时搬一次。判断依据是 `while` 循环里比较校验和，不是启动时一句 `cp`。
+2. **写失败要能看见。** 不写 `cp /flag <target> 2>/dev/null || true`。写不进去时打一行明确日志，或让循环返回非零。
+3. **目标文件不能是只读。** 给 guest 镜像里的 `esp/FLAG` 加 `chmod 444`，下一轮同步就写不进去，QEMU 只会打一行 `Tried to write to write-protected file`，选手拿到的永远是占位值。
+4. **宿主侧要能回读 guest 实际看到的值。** 只确认 host 上的文件写成功不算通过。
+5. **验证脚本写第二个 Flag 再解一次。** `verify.sh` 默认会做这一步；第一次能过、第二次拿旧值，就说明同步没生效。
+
+### 不许把超时当结论
+
+QEMU 题跑得慢是正常的，但**慢不是结论**。看到解题超时，先查为什么慢：
+
+- 同步循环是不是在空转重试（写不进去，一直重试）。
+- guest 每次开机多久，能不能并发跑多个小问。
+- 串口传输有没有开回显，逐块等回显会慢一个数量级。
+
+**不要写"这是 QEMU 模拟的固有开销，建议平台放宽超时"这种结论。** 同步循环里的 `chmod 444` 让 `cp` 静默失败、循环一直重试，也会表现成"解题很慢"。**先把替代解释排除掉，再写结论。**
+
+解题确实需要更长时间时，把实测耗时写进手册 1.9，验证时用 `--solve-timeout` 调大，而不是压缩题目链路。
+
+### 其他实测要点
+
+- 串口用 QEMU 自带的 TCP 监听（`-chardev socket,...` + `-serial chardev:char0`），不要自己写 pty 转发——客户端断开后容易卡住不再出数据。
+- QEMU 需要 KVM 时，`verify.sh` 默认的 `docker run` 不带 `--device`。用 `--run-arg --device=/dev/kvm` 补上；没有 KVM 走 TCG 会慢好几倍。
+- 一个容器里跑两个 QEMU 实例时，两个小问要并发解，串行必然超时。
+
+构建和手动验证的历史流程见 v3.0.1 的 [`docs/linux_qemu_manual_validation.md`](https://github.com/D1a0y1bb/CloverSec-CTF-Pack/blob/v3.0.1/src/CloverSec-CTF-Build-Dockerizer/docs/linux_qemu_manual_validation.md)。
 
 ## 旧平台 helper（changeflag.sh）
 
