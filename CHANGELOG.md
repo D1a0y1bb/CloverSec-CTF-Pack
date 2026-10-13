@@ -4,6 +4,50 @@
 
 ## Unreleased
 
+## v6.3.0 - 2026-10-13
+
+### 变更
+
+- 迁移旧题时默认反推原题难度并原样恢复，开工第一步写难度基线：漏洞类型、链路、服务拓扑、运行时版本。从题目设计出新题时，基线就是设计稿。
+- 降级清单改成表格，补上服务层替换：nginx+php-fpm 换成 `php:*-apache`、换数据库、升级运行时大版本都要先问用户。
+- 平台只收单容器时，把原题每个服务原样装进同一镜像，新增 `provenance.service_parity` 记录逐服务对照。
+- 提问时先给反推结论再问缺口，不拿"要不要保持现状"当选项。
+- 手册判断部分改为搬运优先：出题人材料直接搬运；外部 writeup 只当线索，写进手册前要在本次环境复跑核对；没有来源才在正文写 `TODO(人工填写)`。
+- `TODO(人工填写)` 不再放进 HTML 注释，写指引的注释交付前全部删掉。
+- 1.9 解题步骤要求能用本次的 `solve/solve.py` 复跑通过。
+- 容器题和附件题的判定给出四条优先级规则，不再只看 README 里有没有在线地址。
+- 多题交付分 `容器题/`、`附件题/` 两级，根 `README.md` 只做索引；新增删除题目前后的引用检查。
+- 新增 15 条交付前自检清单。
+- 新增静态 Flag 题（`flag.mode: static`）的写法；`flag.path` 逐题判定，不按题型或批次一刀切。
+- 附件题没有 `challenge.yaml`，provenance 写进交付说明；去掉 `attachment_only` 取值。
+- 新增 `references/batch.md`：分批、一个目录一个写入者、子 Agent 任务书和回报格式、进度文件、交接、远程机器共用资源。
+- `references/dockerfiles.md` 新增兼容旧构建器和解释器大版本两节。
+- `references/special.md` 重写多服务一节，Linux-QEMU 补 Flag 同步校验清单。
+- SKILL.md 补回 verify.sh 的跑法和各结论的处理方式；去掉与 references 重复的 Dockerfile 范例。
+- `agents/openai.yaml` 的描述和指引同步难度恢复。
+
+### verify.sh
+
+- RDG 判题脚本返回 126/127，或返回非 0 但输出里没有 `ok: False` / `RESULT: FAIL` 判定行时判 `failed`，不再当成"漏洞还在"。
+- 附件题手册按八节顺延写时不再误判缺 1.9。
+- 手册里用反斜杠续行的多行 `docker run` 不再误判没带 `/start.sh`。
+- `challenge.yaml` 用 `yaml.safe_load` 解析，语法错误判 `failed`；provenance、`flag.mode`、`check.path` 放在顶层或 `challenge:` 下都能读到，没有 PyYAML 时 `flag.mode` 和 `check.path` 退回文本匹配。
+- 写入 Flag 后换第二个 Flag 再解一次，拿到旧值判 `failed`；每次写入后最多等 15 秒，`--no-flag-rotate` 跳过。
+- 静态 Flag 题要求解题输出里出现镜像里 `flag.path` 的值，或 `--expect-flag` 给的值。
+- 附件题解题也按 `--solve-timeout` 超时，支持 `--solve`。
+- 手册有 `TODO(人工填写)` 时判 `partial`。
+- 递归检查 `.DS_Store`、`__pycache__` 等垃圾文件，与多余文件同时报出；`_*` 内部工作文件和根目录 `README.md` 判 `failed`。
+- `start.sh` 里有 `GZCTF_FLAG` / `DASFLAG` 兼容段报 `partial`；`solve.py` 引用第三方库但没写 `pip install` 报 `partial`。
+- 新增 `--solve-timeout`、`--run-arg`、`--expect-flag`、`--no-flag-rotate`。
+- 修复 `cleanup: command not found`、非数字 `--timeout` 死等、`environment_failed` 覆盖 `failed`、`--report` 遇到反斜杠写出非法 JSON、`COPY --chown=... flag` 识别不到占位 Flag。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- CI 附件题回归 7 项本地跑通：八节顺延手册、`--expect-flag` 不一致、手册 TODO、内部工作文件、非数字 `--timeout`、JSON 报告、解题超时。
+- 容器题实测：每次请求读 Flag 的题 passed；启动时缓存和第一次请求时缓存的题 failed；同步循环 6 秒一次的题 passed；静态 Flag 题 passed；中文目录名 passed；RDG 判定行正常且输出带 not found 的题 passed，check.py 缺依赖崩掉的题 failed；去掉 PyYAML 后静态 Flag 题和 RDG 题结论不变。
+
+
 ## v6.2.1 - 2026-10-08
 
 ### 变更

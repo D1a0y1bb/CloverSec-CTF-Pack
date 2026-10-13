@@ -412,6 +412,53 @@ docker run --rm --entrypoint sha256sum <镜像> /home/ctf/pwn /home/ctf/libc.so.
 
 两边不一致说明 Dockerfile 重新编译过，或者 COPY 的是另一份文件。
 
+## 兼容旧构建器
+
+有些平台和远程构建机只有经典 `docker build`，没有 BuildKit。下面这些写法只有 BuildKit 认，到那边直接报错：
+
+| 不要写 | 写成 |
+|---|---|
+| `COPY --chmod=555 start.sh /start.sh` | `COPY start.sh /start.sh` + `RUN chmod 555 /start.sh` |
+| `RUN --mount=type=cache,...` | 去掉缓存挂载，正常的 `RUN` |
+| `FROM --platform=$BUILDPLATFORM ...` | 去掉这个参数（经典构建器不会自动填 `BUILDPLATFORM`，展开成空串直接报错） |
+
+`COPY --chown` 经典构建器也支持，可以照常用。
+
+**写完 Dockerfile 用 `DOCKER_BUILDKIT=0 docker build` 再过一遍**，本地 BuildKit 能过不代表平台能过。
+
+### chmod 的目标必须是文件
+
+批量改权限时最容易踩的坑：把 `chmod 644 /app/www/index.html` 写成 `chmod 644 /app/www/`。**给目录去掉执行位会让整个目录进不去**，服务直接返回 404，而构建日志一个字都不报。
+
+改权限前先确认目标是文件：
+
+```dockerfile
+RUN chmod 555 /start.sh && chmod 644 /app/www/index.html
+```
+
+脚本批量处理时，先 `test -f` 再 `chmod`。
+
+## 解释器大版本必须和原题一致
+
+迁移旧题时，基础镜像的**大版本**是题目难度的一部分，不是可以顺手升级的细节：
+
+| 原题 | 不要升级成 | 为什么 |
+|---|---|---|
+| PHP 5.x | PHP 7.x / 8.x | 7.0 移除了 `preg_replace` 的 `/e` 修饰符和 `mysql_*` 函数，很多旧利用链直接失效 |
+| PHP 7.x | PHP 8.x | 8.0 改了字符串和数字的弱比较规则，`"abc" == 0` 从 true 变成 false |
+| Node 旧大版本 | 新大版本 | 依赖包和内置 API 随大版本变化，原型链污染这类利用链可能失效 |
+| JDK 8 | JDK 9+ | 模块系统限制反射；JNDI 远程类加载在 8u191 之后默认关闭，反序列化链受小版本影响 |
+| ImageMagick 某个修订版 | 更新的修订版 | 编码器（MSL、MVG）和安全策略随修订版变化 |
+
+老镜像自带的 apt 源已经失效，按「旧版本运行时」一节换归档源；**换源不等于升级版本**。锁定写法：
+
+```dockerfile
+# 版本取自原题镜像：漏洞依赖 PHP 5.6 + nginx 1.x，不升级。
+FROM php:5.6-fpm@sha256:<原 digest>
+```
+
+同一道题原题是 nginx + php-fpm 时，两个组件都要装进同一镜像、沿用原配置文件，**不要**换成 `php:*-apache`。详见 [special.md](special.md) 的多服务一节。
+
 ## 国内构建与 CRLF
 
 - 基础镜像拉不下来时加镜像前缀，例如 `docker.m.daocloud.io/library/php:7.4-cli`。手册里写清原始镜像名，方便在别处构建。
