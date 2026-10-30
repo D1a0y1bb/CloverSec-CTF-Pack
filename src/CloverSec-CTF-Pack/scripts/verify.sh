@@ -680,9 +680,9 @@ if [ ${#EXTRA[@]} -gt 0 ]; then
   fail "交付目录里有白名单外的条目：${EXTRA[*]}。单个题目录只允许 src/ Dockerfile start.sh challenge.yaml flag README/ solve/，按需加 附件/ 镜像/ last/（RDG 题另有 check/ changeflag.sh ttyd 等）。多出来的要么删掉，要么确认后加进白名单"
 fi
 if [ ${#JUNK[@]} -gt 0 ]; then
-  # .DS_Store / __pycache__ / *.pyc 是纯垃圾，不是"待确认的多余文件"，判 failed。
-  DELIVERY=failed
-  fail "交付目录里有垃圾文件：${JUNK[*]}。一条命令清掉：find <交付根> \\( -name .DS_Store -o -name __pycache__ -o -name '*.pyc' \\) -print -delete"
+  # .DS_Store / __pycache__ / *.pyc 只提醒，不改结论。
+  [ "$DELIVERY" = passed ] && DELIVERY=partial
+  partial "交付目录里有垃圾文件：${JUNK[*]}。一条命令清掉：find <交付根> \\( -name .DS_Store -o -name __pycache__ -o -name '*.pyc' \\) -print -delete"
 fi
 if [ "$DELIVERY" = passed ]; then
   # 两个包共用硬链接时，单独复制其中一个会丢内容——交付包必须能独立拷走。

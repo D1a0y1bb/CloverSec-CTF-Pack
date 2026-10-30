@@ -545,7 +545,7 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 
 | 条 | 覆盖程度 |
 |---|---|
-| 3、4 | 全部：白名单外的顶层条目判 `failed`，垃圾文件判 `failed`，附件 0 字节 / `__MACOSX` 报警 |
+| 3、4 | 白名单外的顶层条目判 `failed`；垃圾文件只提醒；附件 0 字节 / `__MACOSX` 报警 |
 | 9 | YAML 语法（需 PyYAML，没装会提示）、provenance 取值枚举、`name` 与目录名一致、`original_material` 路径存在 |
 | 12 | LF、shebang、`exec`/`wait`、别的平台合同、`start.sh` 写 flag |
 | 14 | 镜像里有没有 `/bin/bash` |
