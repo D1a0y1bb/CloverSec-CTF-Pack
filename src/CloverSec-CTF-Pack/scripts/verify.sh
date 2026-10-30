@@ -61,26 +61,32 @@ SOLVE_TIMEOUT=120
 
 is_num() { case "$1" in ''|*[!0-9]*) return 1;; esac; return 0; }
 
+# 需要值的参数统一走这里：缺值直接退出码 2。用 ${2:?} 的话 bash 会以 1 退出，
+# 和文档写的"2 参数错误"对不上。
+need_val() { # $1 = 参数名；$2 = 值（可能是空）
+  [ $# -ge 2 ] && [ -n "$2" ] || { echo "failed: $1 需要参数"; exit 2; }
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --port) PORTS+=("${2:?--port 需要参数}"); shift 2;;
-    --flag-path) FLAGPATH="${2:?--flag-path 需要参数}"; shift 2;;
-    --solve) SOLVE="${2:?--solve 需要参数}"; shift 2;;
-    --solve-timeout) SOLVE_TIMEOUT="${2:?--solve-timeout 需要参数}"; shift 2;;
+    --port) need_val --port "${2:-}"; PORTS+=("$2"); shift 2;;
+    --flag-path) need_val --flag-path "${2:-}"; FLAGPATH="$2"; shift 2;;
+    --solve) need_val --solve "${2:-}"; SOLVE="$2"; shift 2;;
+    --solve-timeout) need_val --solve-timeout "${2:-}"; SOLVE_TIMEOUT="$2"; shift 2;;
     --no-flag-rotate) FLAG_ROTATE=0; shift;;
-    --expect-flag) EXPECT_FLAG="${2:?--expect-flag 需要参数}"; shift 2;;
-    --check) CHECK="${2:?--check 需要参数}"; shift 2;;
+    --expect-flag) need_val --expect-flag "${2:-}"; EXPECT_FLAG="$2"; shift 2;;
+    --check) need_val --check "${2:-}"; CHECK="$2"; shift 2;;
     --rdg) FORCE_RDG=1; shift;;
-    --platform) PLATFORM="${2:?--platform 需要参数}"; shift 2;;
-    --run-arg) RUN_ARGS_EXTRA+=("${2:?--run-arg 需要参数}"); shift 2;;
-    --ready-cmd) READY_CMD="${2:?--ready-cmd 需要参数}"; shift 2;;
-    --ready-timeout) READY_TIMEOUT="${2:?--ready-timeout 需要参数}"; shift 2;;
+    --platform) need_val --platform "${2:-}"; PLATFORM="$2"; shift 2;;
+    --run-arg) need_val --run-arg "${2:-}"; RUN_ARGS_EXTRA+=("$2"); shift 2;;
+    --ready-cmd) need_val --ready-cmd "${2:-}"; READY_CMD="$2"; shift 2;;
+    --ready-timeout) need_val --ready-timeout "${2:-}"; READY_TIMEOUT="$2"; shift 2;;
     --similarity) SIMILARITY=1; shift;;
     --no-cache) NO_CACHE=1; shift;;
-    --similarity-report) SIMILARITY_REPORT="${2:?--similarity-report 需要参数}"; shift 2;;
-    --timeout) START_TIMEOUT="${2:?--timeout 需要参数}"; shift 2;;
+    --similarity-report) need_val --similarity-report "${2:-}"; SIMILARITY_REPORT="$2"; shift 2;;
+    --timeout) need_val --timeout "${2:-}"; START_TIMEOUT="$2"; shift 2;;
     --keep) KEEP=1; shift;;
-    --report) REPORT="${2:?--report 需要参数}"; shift 2;;
+    --report) need_val --report "${2:-}"; REPORT="$2"; shift 2;;
     -h|--help) usage;;
     -*) echo "未知参数: $1"; usage;;
     # 第一个非选项参数是题目目录，多出来的直接报错，避免悄悄忽略拼错的路径。
@@ -109,6 +115,16 @@ PROJECT=$(cd "$PROJECT" 2>/dev/null && pwd) || { echo "failed: 目录不存在";
 cd "$PROJECT" || exit 2
 
 # 报告是给跑验证的人看的，不是交付物。路径落在交付目录里直接拒绝，避免又把它交出去。
+# --report 和 --similarity-report 都不许落在交付目录里，报告不是交付物。
+for _rpt in "$REPORT" "$SIMILARITY_REPORT"; do
+  [ -n "$_rpt" ] || continue
+  case "$(cd "$(dirname "$_rpt")" 2>/dev/null && pwd || echo "")" in
+    "$PROJECT"|"$PROJECT"/*)
+      echo "failed: 报告路径在交付目录里（${_rpt}）。报告不属于交付物，写到系统临时目录，例如："
+      echo "  --report \"\$(mktemp -d)/verify.json\""
+      exit 2;;
+  esac
+done
 if [ -n "$REPORT" ]; then
   case "$(cd "$(dirname "$REPORT")" 2>/dev/null && pwd || echo "")" in
     "$PROJECT"|"$PROJECT"/*)
@@ -136,7 +152,12 @@ stage() { # 同一阶段重复设置时只保留最后一次结论
   STAGE+=("$1: $2")
 }
 
-json_str() { printf '%s' "$1" | tr '\t' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+# JSON 字符串转义：反斜杠、双引号、制表符、换行、回车都要处理。
+# 只转前两个的话，带多行的 note（比如凭据命中清单）会写出非法 JSON。
+json_str() {
+  printf '%s' "$1" | tr '\t' ' ' | tr -d '\r' \
+    | awk 'BEGIN{ORS=""} NR>1{print "\\n"} {gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); print}'
+}
 
 write_report() {
   [ -n "$REPORT" ] || return 0
@@ -155,7 +176,11 @@ write_report() {
       printf '\n    "%s"' "$(json_str "$n")"; first=0
     done
     printf '\n  ]\n}\n'
-  } > "$REPORT"
+  } > "$REPORT" 2>/dev/null || {
+    fail "报告写不进去：${REPORT}。确认目录存在，或写到 \$(mktemp -d) 下"
+    rm -f "$REPORT" 2>/dev/null
+    return 1
+  }
   echo "   报告: ${REPORT}"
 }
 
@@ -889,17 +914,31 @@ fi
 # 跑一次解题命令，带超时。结果写进 SOLVE_SRC，超时时置 SOLVE_TIMED_OUT=1。
 FIRST_HOSTPORT=""; SOLVE_ENV=(); SOLVE_SRC=0; SOLVE_TIMED_OUT=0
 run_solve() {
-  ( cd "$PROJECT" && env HOST=127.0.0.1 PORT="$FIRST_HOSTPORT" "${SOLVE_ENV[@]+"${SOLVE_ENV[@]}"}" \
-      sh -c "$SOLVE" ) >"$SOLVELOG" 2>&1 &
+  # 超时后杀整棵进程树。只 kill 子 shell 的话，真正的解题进程会被 init 收养
+  # 继续跑（PPID=1），批量验证时堆一堆孤儿把机器拖垮。
+  # setsid 只在有它的系统上用（macOS 没有），有就顺便让它自成进程组。
+  if command -v setsid >/dev/null 2>&1; then
+    ( cd "$PROJECT" && exec setsid env HOST=127.0.0.1 PORT="$FIRST_HOSTPORT" \
+        "${SOLVE_ENV[@]+"${SOLVE_ENV[@]}"}" sh -c "$SOLVE" ) >"$SOLVELOG" 2>&1 &
+  else
+    ( cd "$PROJECT" && env HOST=127.0.0.1 PORT="$FIRST_HOSTPORT" \
+        "${SOLVE_ENV[@]+"${SOLVE_ENV[@]}"}" sh -c "$SOLVE" ) >"$SOLVELOG" 2>&1 &
+  fi
   local spid=$! t0
   t0=$(date +%s)
   while kill -0 "$spid" 2>/dev/null && [ $(( $(date +%s) - t0 )) -lt "$SOLVE_TIMEOUT" ]; do sleep 1; done
   if kill -0 "$spid" 2>/dev/null; then
-    # SIGTERM 不一定收得掉卡住的解题脚本，再补一刀 KILL，否则它会一直挂着。
-    kill "$spid" 2>/dev/null
+    # 子 shell + 它启动的一切：先 TERM 再 KILL，递归找子进程。
+    _killtree() {
+      local pid=$1 sig=$2 child
+      for child in $(pgrep -P "$pid" 2>/dev/null); do _killtree "$child" "$sig"; done
+      kill -"$sig" "$pid" 2>/dev/null
+    }
+    _killtree "$spid" TERM
     sleep 2
-    kill -KILL "$spid" 2>/dev/null
+    _killtree "$spid" KILL
     wait "$spid" 2>/dev/null
+    # 记录一个哨兵：超时后如果还能 pgrep 到刚才那条解题命令，说明没收干净。
     SOLVE_SRC=124; SOLVE_TIMED_OUT=1
   else
     wait "$spid" 2>/dev/null; SOLVE_SRC=$?
@@ -1427,10 +1466,25 @@ else
       # 但平台链路上根本连不通——只有这一步能抓出来。
       DEAD_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null)
       if [ -n "$DEAD_PORT" ]; then
-        ( cd "$PROJECT" && env HOST=127.0.0.1 PORT="$DEAD_PORT" sh -c "$SOLVE" ) >"$SOLVELOG.dead" 2>&1 &
+        # 正向跑时会展开 SOLVE_ENV（PORT_<容器端口>=...）。负向也要给这些变量，否则只读
+        # PORT_8080 的 solve 会因缺变量直接退出、什么都不输出，负向对照就永远"通过"。
+        DEAD_ENV=()
+        for e in "${SOLVE_ENV[@]+"${SOLVE_ENV[@]}"}"; do
+          case "$e" in PORT_*=*) DEAD_ENV+=("${e%%=*}=${DEAD_PORT}");; *) DEAD_ENV+=("$e");; esac
+        done
+        if command -v setsid >/dev/null 2>&1; then
+          ( cd "$PROJECT" && exec setsid env HOST=127.0.0.1 PORT="$DEAD_PORT" \
+              "${DEAD_ENV[@]+"${DEAD_ENV[@]}"}" sh -c "$SOLVE" ) >"$SOLVELOG.dead" 2>&1 &
+        else
+          ( cd "$PROJECT" && env HOST=127.0.0.1 PORT="$DEAD_PORT" \
+              "${DEAD_ENV[@]+"${DEAD_ENV[@]}"}" sh -c "$SOLVE" ) >"$SOLVELOG.dead" 2>&1 &
+        fi
         DEAD_PID=$!; DEAD_T0=$(date +%s)
         while kill -0 "$DEAD_PID" 2>/dev/null && [ $(( $(date +%s) - DEAD_T0 )) -lt 20 ]; do sleep 1; done
-        kill -9 "$DEAD_PID" 2>/dev/null; wait "$DEAD_PID" 2>/dev/null; DEAD_SRC=$?
+        _killtree "$DEAD_PID" TERM 2>/dev/null
+        sleep 1
+        _killtree "$DEAD_PID" KILL 2>/dev/null
+        wait "$DEAD_PID" 2>/dev/null; DEAD_SRC=$?
         if grep -qF "$WANT_FLAG" "$SOLVELOG.dead" 2>/dev/null; then
           stage solve failed
           fail "solve 在指向一个关着的端口时仍然输出了 Flag（${WANT_FLAG}）。说明它没有走网络：要么有本地文件/docker exec 兜底，要么答案写死在脚本里。改成只能从服务端拿"

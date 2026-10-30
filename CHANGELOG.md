@@ -2,6 +2,29 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.11 - 2026-10-30
+
+代码正确性审查第三轮，加上 README 补齐。
+
+### 修复
+
+- **`--report` 写失败仍报 `passed`**：目标目录不存在时只往 stderr 打一行，`finish` 照走 passed、退出码 0。现在写失败判 `failed`。
+- **报告 JSON 遇到多行 note 就是非法 JSON**：`json_str` 只转义了反斜杠和双引号，没转换行。凭据命中时 note 是多行，`json.load` 直接报错。现在换行也转义。
+- **solve 超时留下孤儿进程**：只 kill 子 shell，真正的 `python3 solve/solve.py` 被 init 收养继续跑（`PPID=1`）。受控复现：`--solve-timeout 3` 的 `sleep(120)`，脚本退出后进程还在。改成递归杀整棵进程树。`setsid` 只在有它的系统上用——**macOS 没有 `setsid`**，之前硬写导致所有解题命令报 `exec: setsid: not found`。
+- **负向对照不传 `PORT_<容器端口>`**：只传 `PORT`，只读 `PORT_8080` 的 solve 在负向轮因缺变量直接退出、不输出 Flag，负向对照恒通过——正好漏掉它要抓的场景。
+- **`--similarity-report` 没有交付目录守卫**：能把报告写进交付目录，随后被白名单判 failed（自伤）。现在和 `--report` 用同一段守卫。
+- **缺参数退出码是 1 不是 2**：`${2:?}` 直接终止，和文档写的"2 参数错误"不符。改成显式检查。
+
+### 文档
+
+- README 中英文补齐 v6.3.5~v6.3.11 的新特性：出题人意愿优先、问题分级、动态 Flag `/bin/bash` 规则、`flag_script` 模板、镜像 `USER` 注意事项、`--no-cache`/`--ready-cmd`/`--similarity` 等参数、solve 负向对照、新增检查项清单、partial/failed 的准确语义。中文 +70 行，英文 +56 行。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- 三个 CI 步骤本地全部通过。
+- 实测：报告写不进目录 → `failed`；凭据多行 note → JSON 合法；`--solve-timeout 3` 的 `sleep(120)` → 无孤儿进程（macOS 无 setsid 也有效）；缺参数 → 退出码 2。
+
 ## v6.3.10 - 2026-10-30
 
 多 Agent 终检（代码正确性 / 文档一致性 / 回归与误报 / 交付可用性）发现的问题。

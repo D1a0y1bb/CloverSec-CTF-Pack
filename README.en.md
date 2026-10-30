@@ -28,12 +28,14 @@ An agent skill for CTF challenge delivery by CloverSec @CloverSecLabs
 
 Give Claude Code or Codex the challenge source, a design note, or an old challenge directory. For container challenges it produces a buildable directory and verifies it locally; for attachment challenges it organises the player-facing files; for RDG defence challenges it produces a hardened environment with its check script. All three get a manual.
 
-- **The original difficulty is restored by default.** The first step is a difficulty baseline (vulnerability type, chain length, service topology, runtime versions), and the challenge is restored to match it. Collapsing service layers, bumping a runtime major version, shortening the chain or dropping protections are all downgrades and must be cleared with the user first. For migrated challenges this happens without a reminder.
+- **The author's intent comes first.** This skill works for the challenge author, not in their place. Anything that changes a verdict, changes the deliverable, picks between several reasonable options, deletes or overwrites existing content, or that you are unsure about — state what you intend to change, why, and what it affects, and wait for confirmation. When the author says "don't care", leave it as is. Facts you can establish yourself (code, platform behaviour, files) you check yourself; don't ask about those.
+- **The original difficulty is restored by default.** The first step is a difficulty baseline (vulnerability type, chain length, service topology, runtime versions), and the challenge is restored to match it — this part needs no question. Only a change *relative to* the original (downgrade, upgrade, simplification) has to be cleared with the user first.
 - Directories are named `<type>-<name>`, where type is one of 20 categories such as Web, Pwn, Crypto or AI. Multi-challenge deliveries split into `容器题/` (container) and `附件题/` (attachment).
 - The source, `Dockerfile` and `start.sh` are written from the examples in the skill, with comments that point out the vulnerability and any non-obvious configuration. Comments are in Chinese.
-- `verify.sh` runs a container challenge the way the platform does: amd64 build, start with `/start.sh`, write a random test flag, probe the ports, and run `solve/solve.py` when present, which must print that flag. It then writes a **second** flag and solves again, which catches services that read the flag into memory at startup.
-- It also checks the manual's filename and sections, whether the `docker run` line carries `/start.sh`, whether the output directory holds stray files or `.DS_Store`, and whether `challenge.yaml` actually parses.
-- The manual lives in `README/`. Fact sections are filled in; judgement sections are **carried over from the author's material first**, and only left as `TODO` when no source exists — reported honestly.
+- **A dynamic-flag image must contain `/bin/bash`**: the platform runs the injected script with `/bin/bash /changeflag.sh`, and alpine / distroless / scratch images lack it, so the flag silently stays at the placeholder. `verify.sh` probes for it after the build.
+- `verify.sh` runs a container challenge the way the platform does: amd64 build, start with `/start.sh`, write a random test flag, probe the ports, and run `solve/solve.py` when present, which must print that flag. It then writes a **second** flag and solves again, which catches services that read the flag into memory at startup. Finally it points the solver at a closed port, where it must fail — that catches solvers that read a local file or use `docker exec` as a fallback.
+- It also checks the manual's filename, skeleton and 1.5 fields, duplicated sections and content copied from another challenge; whether `challenge.yaml` really parses; provenance values and name consistency; the delivery-directory whitelist; secrets and customer PII; leftover flags in `src/` and attachments; whether the image tarball matches the current build; and whether the landing page is an error page or references an external CDN.
+- The manual lives in `README/`. Fact sections are filled in; judgement sections are **carried over from the author's material first**, then from what this delivery actually tested, and only left as `TODO` when no source exists — reported honestly.
 - `solve/`, `附件/` (attachments), `镜像/` (image tarball) and `last/` (original write-ups) sit next to `src/`.
 - For challenges that must stay buildable for years, the references show how to pin image digests, apt snapshots and dependency versions.
 - Multi-service, Bundle, Scenario, RDG/AWD and Linux-QEMU challenges have their own reference file; batches of five or more use the batch-delivery one.
@@ -152,7 +154,22 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes
 
 The script builds for `linux/amd64`, starts the container with `/start.sh`, waits until the ports are really listening, writes a random test flag to `flag.path`, then probes the ports. If `solve/solve.py` exists it runs it (target address in `HOST` and `PORT`) and only passes if the output contains that test flag; it then writes a **second** flag and solves again, and both runs must return their own value. Services that read the flag into memory at startup, or sync loops that silently fail, fail here. Each write is given up to 15 seconds to take effect; use `--no-flag-rotate` for challenges that a single solve leaves broken. Use `--solve '<command>'` for solvers in other languages, and `--solve-timeout` for slow QEMU challenges. The container and image are removed afterwards; pass `--keep` to leave them.
 
-It also checks four things that have nothing to do with the runtime but are the most commonly missed: whether the manual has the right filename and sections, whether the `docker run` line carries `/start.sh`, whether the output directory holds stray files or `.DS_Store`, and whether `challenge.yaml` really parses. Challenges needing KVM or extra network capabilities get them via `--run-arg --device=/dev/kvm`. Attachment challenges have no test flag, so assert the solved value with `--expect-flag '<the value from manual 1.5>'`; static-flag challenges must produce the value baked into the image.
+Other useful flags:
+
+| Flag | Purpose |
+|---|---|
+| `--no-cache` | Disable the build cache. **Required for the last round before delivery** — a cached build reuses stale layers and database volumes, hiding broken schema SQL or mis-installed dependencies |
+| `--ready-cmd CMD` | Run after the ports listen; the service is only ready when it exits 0. Needed for QEMU challenges, where an open port does not mean the guest has booted |
+| `--ready-timeout N` | Seconds to wait for the readiness command |
+| `--similarity` | Compare this batch's manuals for templated content (hints only, does not change the verdict). Off by default |
+| `--expect-flag F` | Assert the solved value equals F; for attachment and static-flag challenges |
+| `--no-flag-rotate` | Skip the flag-rotation re-check (for challenges a single solve leaves broken) |
+| `--solve-timeout N` | Solver timeout; raise it for QEMU / LLM challenges |
+| `--keep` | Keep the container and image afterwards |
+
+Beyond running the challenge it also checks: the manual's filename, skeleton, 1.5 fields, duplicated sections and content borrowed from another challenge; whether `challenge.yaml` really parses; provenance values and name consistency; the delivery whitelist; secrets and customer PII; leftover flags in `src/` and attachments; whether the image tarball matches the current build; hard links; whether `start.sh` writes the flag; whether the landing page is an error page or a placeholder; whether the page pulls from an external CDN; and whether `solve.py`'s imports resolve. Checks described as **hints** print a notice and do not change the verdict.
+
+Challenges needing KVM or extra network capabilities get them via `--run-arg --device=/dev/kvm`. Attachment challenges have no test flag, so assert the solved value with `--expect-flag '<the value from manual 1.5>'`; static-flag challenges must produce the value baked into the image.
 
 ```text
 == 构建镜像 (linux/amd64)
@@ -164,8 +181,9 @@ It also checks four things that have nothing to do with the runtime but are the 
    回读一致（444 root:root）
 == 探测端口 5000（本机 127.0.0.1:61197）
    HTTP 200
+   动态 Flag 依赖：/bin/bash 存在
 == 运行解题命令: python3 solve/solve.py
-   拿到测试 Flag
+   拿到 Flag
 == 复查：写入第二个测试 Flag，再解一次
    第二轮拿到新 Flag，程序按请求读取 Flag
 
@@ -175,15 +193,15 @@ It also checks four things that have nothing to do with the runtime but are the 
 For RDG challenges the last stage becomes a check verdict:
 
 ```text
-== 阶段: handbook: passed provenance: passed delivery: passed build: passed startup: passed port: passed flag_write: skipped check_initial: ok: False
+== 阶段: handbook: passed provenance: passed delivery: passed build: passed startup: passed flag_write: skipped dynflag_bash: skipped port: passed check_initial: ok: False
 == 结果: passed
 ```
 
 | Result | Exit code | Meaning |
 |---|---|---|
 | `passed` | 0 | Every check passed |
-| `partial` | 3 | It runs, but some checks did not pass (leftover manual TODOs, a manual `docker run` line without `/start.sh`, no port declared, stray files); each one is listed |
-| `failed` | 1 | Build failed, container exited, port bound to 127.0.0.1 only, flag not writable, the solver still returned the old flag after rotation, the solve script did not get the flag, the manual has the wrong filename, `challenge.yaml` does not parse, or an RDG challenge is already fixed from the start |
+| `partial` | 3 | It runs, but some checks did not pass (leftover manual TODOs, a manual `docker run` line without `/start.sh`, no port declared); each one is listed |
+| `failed` | 1 | Build failed, container exited, port bound to 127.0.0.1 only, flag not writable, image lacks `/bin/bash`, image `USER` cannot write the flag, the solver still returned the old flag after rotation, the solver did not get the flag or got it while the port was closed, the manual has the wrong filename, `challenge.yaml` does not parse, the delivery directory has entries outside the whitelist, or an RDG challenge is already fixed from the start |
 | `environment_failed` | 4 | The host cannot run it (a binary crashes under amd64 emulation); the challenge itself may be fine. Re-run on native amd64 |
 
 Port and flag path come from `challenge.yaml` by default. Override them with `--port` and `--flag-path`. See `verify.sh --help` for all options.
@@ -230,6 +248,26 @@ The platform writes a dynamic flag by **running an injected script with `/bin/ba
 **If the image has no `/bin/bash`, the flag is never written**, and it fails silently — players get the placeholder value and the platform only reports "environment failed to start". Alpine-based images need an explicit `RUN apk add --no-cache bash`; distroless and scratch images can only use a static flag.
 
 `verify.sh` probes for this after the build and reports `failed` when it is missing.
+### The `flag_script` template
+
+The script that writes the dynamic flag is entered by the author **in the platform's admin panel**, not shipped with the delivery. `$new_flag` must be kept — the platform substitutes the per-instance value.
+
+```bash
+#!/bin/bash
+set -uo pipefail
+# The platform has already substituted $new_flag with this instance's value.
+printf '%s\n' "$new_flag" > /flag
+chmod 444 /flag
+```
+
+Change the last two lines when the target path is not `/flag`; append your own commands when the flag must also reach a database, a config file or a QEMU rootfs. **Do not do slow work in this script** — the platform retries only when the MySQL socket is not ready yet (up to 30 attempts); a missing bash or a permission denial is abandoned on the first try.
+
+Manual section 1.5 must quote this script verbatim so the author can paste it.
+
+### When the image sets `USER`
+
+The platform runs the injected script through `exec_run`, which **does not pass a user and inherits the image's `USER`**. If the Dockerfile has `USER 1000:1000` while the flag file is owned by root, the platform cannot write it. Either make the target file's owner follow `USER`, or `chown`/`sudo` inside `flag_script`. `verify.sh` also writes once as the image's `USER` and reports `failed` if that fails.
+
 
 ### flag.path
 

@@ -28,15 +28,29 @@
 
 把题目源码、一段题目设计或者一个旧题目录交给 Claude Code / Codex，整理成能交付的题目包：容器题给出可构建的镜像目录并本地验证，附件题给出整理好的选手附件，RDG 防守题给出带判题脚本的加固环境，三类都带手册。
 
-- **默认恢复原题难度**：开工第一步写难度基线（漏洞类型、链路、服务拓扑、运行时版本），默认原样恢复。合并服务层、升级运行时大版本、压缩链路、删防护都算降级，必须先问过用户。迁移旧题时这一步不用等提醒。
+- **出题人意愿优先**：这个 Skill 是给作者打工的，不是替作者做主的。改判定结果、改交付物、在多个方案里选、删改已有内容、自己拿不准的，动手前先说清"打算改什么、为什么、会影响什么"，等确认再做。作者说"无所谓"就保持现状。能查证的事实（代码、平台、文件）自己查，不要拿去问。
+- **默认恢复原题难度**：开工第一步写难度基线（漏洞类型、链路、服务拓扑、运行时版本），默认原样恢复——这一步不用问。相对原题的降级、升级、简化才算改难度，必须先问过用户。
 - 交付目录按 `题目类型-题目名称` 命名，类型取 Web、Pwn、Crypto、AI 等 20 种；多题交付分 `容器题/` 与 `附件题/` 两级。
 - 源码、`Dockerfile`、`start.sh` 按内置范例编写，带中文注释，讲清漏洞点和不明显的配置。
-- 容器题用 `verify.sh` 按平台的方式跑一遍：amd64 构建、`/start.sh` 启动、写入随机测试 Flag、探测端口，有 `solve/solve.py` 就运行它，必须拿到这个 Flag；再换一个 Flag 解第二次，抓"启动时把 Flag 读进内存"的题。
-- 顺手检查手册文件名和章节、`docker run` 有没有带 `/start.sh`、交付目录有没有多余文件和 `.DS_Store`、`challenge.yaml` 能不能真解析。
-- 手册写在 `README/`：事实部分填全，判断部分**优先从出题人材料搬运**，只有确实没有来源才留 `TODO` 并如实报告。
+- **动态 Flag 题镜像里必须有 `/bin/bash`**：平台用 `/bin/bash /changeflag.sh` 执行注入脚本，alpine / distroless / scratch 缺 bash 就静默失败，Flag 停在占位值。`verify.sh` 会构建后探测。
+- 容器题用 `verify.sh` 按平台的方式跑一遍：amd64 构建、`/start.sh` 启动、写入随机测试 Flag、探测端口，有 `solve/solve.py` 就运行它，必须拿到这个 Flag；再换一个 Flag 解第二次，抓"启动时把 Flag 读进内存"的题；再指向一个关着的端口跑一次，必须失败，抓"读本地文件/docker exec 兜底"的假解题。
+- 还会检查：手册文件名/骨架/1.5 字段/串题、`challenge.yaml` 真解析、provenance 取值与命名一致、交付目录白名单、敏感数据与凭据、镜像 tar 与当前构建是否一致、`src/` 里有没有 flag 残留、首页是不是 `NOT-FOUND`、页面有没有引外网 CDN。
+- 手册写在 `README/`：事实部分填全，判断部分**优先从出题人材料搬运**，其次是本次实测链路，只有确实没有来源才留 `TODO` 并如实报告。
 - `solve/`、`附件/`、`镜像/`、`last/` 都放在和 `src/` 同级的目录。
 - 需要长期存档的题，按参考文档锁定镜像 digest、apt 源和依赖版本，上游更新后照样能 build。
 - 多服务、Bundle、Scenario、RDG/AWD、Linux-QEMU 有单独的参考文档；一次处理 5 道以上时读批量交付那份。
+
+### 问题分级
+
+审计和自检报出来的东西分三档，不分档的话 `.DS_Store` 和"拿不到 Flag"会混在一起：
+
+| 档位 | 判据 | 处理 |
+|---|---|---|
+| **阻断** | 拿不到 Flag、难度被削、平台起不来、Flag 写不进去 | 必须修 |
+| **要修** | 手册里的路径、端口、命令和实际不符，选手照着做会卡 | 修 |
+| **记录即可** | 不影响解题的一切（垃圾文件、镜像体积、未锁 digest、动态 Flag 的占位值） | 写进交付说明，不当缺陷 |
+
+`verify.sh` 里带"提醒"的检查只打提示、不改结论；会改结论的是白名单外条目、provenance 非法值、手册缺骨架这类结构问题。
 
 ## 安装
 
@@ -141,7 +155,22 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes
 
 脚本按 `linux/amd64` 构建镜像，用 `/start.sh` 起容器，等端口真正开始监听，往 `flag.path` 写一个随机测试 Flag，再探测端口。目录里有 `solve/solve.py` 时自动运行它（从环境变量 `HOST`、`PORT` 读地址），输出里出现这个测试 Flag 才算通过；然后换一个 Flag 再解第二次，两次都拿到对应的值才通过，启动时把 Flag 读进内存的题会在这一步暴露。每次写入后最多等 15 秒，给同步循环留出生效时间；解一次就会打坏题目状态的题用 `--no-flag-rotate` 跳过。其他语言的解题脚本用 `--solve '<命令>'` 指定，QEMU 那类慢题用 `--solve-timeout` 调大超时。跑完删除容器和镜像，加 `--keep` 保留。
 
-它还会顺手检查四件和运行无关、但最常被漏掉的事：手册文件名和章节是否齐全、`docker run` 命令有没有带 `/start.sh`、交付目录有没有多余文件和 `.DS_Store`、`challenge.yaml` 能不能被真正解析。需要 KVM 或额外网络能力的题，用 `--run-arg --device=/dev/kvm` 这类参数补进 `docker run`。附件题没有测试 Flag，用 `--expect-flag '<手册 1.5 里的值>'` 断言解出来的值真的对；静态 Flag 题默认要求解出镜像里那个值。
+需要 KVM 或额外网络能力的题，用 `--run-arg --device=/dev/kvm` 这类参数补进 `docker run`。附件题没有测试 Flag，用 `--expect-flag '<手册 1.5 里的值>'` 断言解出来的值真的对；静态 Flag 题默认要求解出镜像里那个值。
+
+其他常用参数：
+
+| 参数 | 用途 |
+|---|---|
+| `--no-cache` | 构建时禁用缓存。**交付前最后一轮必须带**——带缓存会复用旧层和旧数据卷，建表 SQL 报错、依赖装错都被掩盖 |
+| `--ready-cmd CMD` | 端口监听后再执行的就绪命令，返回 0 才算真可用。QEMU 题必用（端口一开就判"已就绪"会把 solve 的时间预算吃在启动上） |
+| `--ready-timeout N` | 等就绪命令的秒数 |
+| `--similarity` | 对同批目录的手册做雷同度检查（只提示，不改结论）。默认关闭 |
+| `--expect-flag F` | 断言解出的值等于 F，附件题和静态 Flag 题用 |
+| `--no-flag-rotate` | 跳过换 Flag 复查（解一次就会打坏题目状态的题用） |
+| `--solve-timeout N` | 解题超时秒数，QEMU/LLM 类题调大 |
+| `--keep` | 跑完保留容器和镜像，便于排查 |
+
+除运行之外还会检查：手册文件名/骨架/1.5 字段/同节号重复/串题、`challenge.yaml` 能不能真解析、provenance 取值与 `name` 一致性、交付目录白名单、敏感数据与生产凭据、`src/` 和附件里的 flag 残留、镜像 tar 与当前构建是否一致、硬链接、`start.sh` 有没有写 flag、首页是不是错误页或占位内容、页面有没有引外网 CDN、`solve.py` 的依赖能不能导入。其中**带"提醒"性质的只打提示、不改结论**。
 
 ```text
 == 构建镜像 (linux/amd64)
@@ -153,8 +182,9 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes
    回读一致（444 root:root）
 == 探测端口 5000（本机 127.0.0.1:61197）
    HTTP 200
+   动态 Flag 依赖：/bin/bash 存在
 == 运行解题命令: python3 solve/solve.py
-   拿到测试 Flag
+   拿到 Flag
 == 复查：写入第二个测试 Flag，再解一次
    第二轮拿到新 Flag，程序按请求读取 Flag
 
@@ -164,15 +194,15 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes
 RDG 题的输出换成 check 判定：
 
 ```text
-== 阶段: handbook: passed provenance: passed delivery: passed build: passed startup: passed port: passed flag_write: skipped check_initial: ok: False
+== 阶段: handbook: passed provenance: passed delivery: passed build: passed startup: passed flag_write: skipped dynflag_bash: skipped port: passed check_initial: ok: False
 == 结果: passed
 ```
 
 | 结果 | 退出码 | 含义 |
 |---|---|---|
 | `passed` | 0 | 全部检查通过 |
-| `partial` | 3 | 能跑，但有检查项没通过（手册有 TODO、手册的 `docker run` 没带 `/start.sh`、没声明端口、目录有多余文件等），输出里逐条列出 |
-| `failed` | 1 | 构建失败、容器退出、端口只监听 127.0.0.1、Flag 写不进去、换 Flag 后拿到旧值、解题拿不到 Flag、手册文件名不对、`challenge.yaml` 解析失败，或 RDG 初始环境就是修好的 |
+| `partial` | 3 | 能跑，但有检查项没通过（手册有 TODO、手册的 `docker run` 没带 `/start.sh`、没声明端口等），输出里逐条列出 |
+| `failed` | 1 | 构建失败、容器退出、端口只监听 127.0.0.1、Flag 写不进去、镜像缺 `/bin/bash`、镜像 `USER` 写不进 Flag、换 Flag 后拿到旧值、解题拿不到 Flag 或在断网时仍拿到 Flag、手册文件名不对、`challenge.yaml` 解析失败、交付目录有白名单外条目、RDG 初始环境就是修好的 |
 | `environment_failed` | 4 | 本机跑不动（amd64 模拟下被调试的二进制崩溃等），题目本身没错。换原生 amd64 重跑 |
 
 端口和 Flag 路径默认从 `challenge.yaml` 读取，也可以用 `--port`、`--flag-path` 指定。完整参数见 `verify.sh --help`。
@@ -220,6 +250,26 @@ provenance:
 
 `verify.sh` 构建后会探测这一项，缺了直接判 `failed`。
 
+### flag_script 模板
+
+动态 Flag 的写入脚本由出题人在**平台后台的文本框**里填，不随交付物走。`$new_flag` 必须保留，平台会替换成本实例的值。
+
+```bash
+#!/bin/bash
+set -uo pipefail
+# 平台注入时已把 $new_flag 替换成本实例的动态值。
+printf '%s\n' "$new_flag" > /flag
+chmod 444 /flag
+```
+
+目标路径不是 `/flag` 时改最后两行；要同步数据库、配置文件、QEMU rootfs 时在 `printf` 后面接命令。**不要做耗时操作**——平台的重试只对 MySQL socket 未就绪这类错误生效（最多 30 次），缺 bash、权限拒绝第一次就放弃。
+
+手册 1.5 要把这段原文写进去，出题人直接复制。
+
+### 镜像是 `USER` 时要注意
+
+平台注入脚本用 `exec_run` 执行，**不传 user，继承镜像的 `USER`**。Dockerfile 里写了 `USER 1000:1000` 而 Flag 属主是 root 时，平台写不进去。要么把目标文件属主随 `USER`，要么在 `flag_script` 里 `chown`/`sudo`。`verify.sh` 会按镜像 `USER` 再写一次，失败判 `failed`。
+
 ### flag.path
 
 必须是**程序实际读取的那个文件**——先打开源码找到读 Flag 的那一行再填：
@@ -245,7 +295,7 @@ provenance:
 
 ```text
 src/CloverSec-CTF-Pack/
-├── SKILL.md              # 入口：难度基线、提问规则、交付目录白名单、流程、自检清单、Flag、RDG
+├── SKILL.md              # 入口：出题人意愿、难度基线、提问规则、交付目录白名单、流程、问题分级、汇报纪律、自检清单、Flag、RDG
 ├── agents/openai.yaml    # Codex 里显示的名称、默认提示词、提问与难度约定
 ├── references/
 │   ├── manual.md         # 手册逐节写法、判断部分的三档来源和范例
