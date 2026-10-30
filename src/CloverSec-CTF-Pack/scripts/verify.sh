@@ -180,7 +180,9 @@ BUILDLOG=$(mktemp); SOLVELOG=$(mktemp); CHECKLOG=$(mktemp)
 # 允许的顶层条目。RDG 题额外允许 check/、ttyd、changeflag.sh、php.ini 等题目真正运行需要的文件。
 whitelisted() {
   case "$1" in
-    src|Dockerfile|start.sh|challenge.yaml|flag|README|solve|附件|镜像) return 0;;
+    # 附件目录历史上两种都在用：附件/ 和 题目附件/。镜像目录同理：镜像/ 和 题目镜像/。
+    src|Dockerfile|start.sh|challenge.yaml|flag|README|solve|镜像|题目镜像) return 0;;
+    附件|题目附件) return 0;;
     check|changeflag.sh|ttyd|ttyd.conf|php.ini|docker-entrypoint.sh|xinetd.conf|ctf.xinetd) return 0;;
     last|lasted) return 0;;   # 出题人保留原始交付材料的目录，按惯例叫 last/lasted
     *) return 1;;
@@ -399,6 +401,31 @@ assert_handbook() {
     fi
     return
   fi
+  # 同一节号出现两次以上，说明这份手册混进了别的内容（真实案例：一份手册里有两套 1.5-1.8，
+  # 前半是另一道 Node/jsfuck 题）。骨架检查只查"每节在不在"，查不出重复。
+  DUP_SECS=$(grep -oE '^#+[[:space:]]*1\.[1-9][[:space:]]' "$expected" \
+    | grep -oE '1\.[1-9]' | sort | uniq -d | tr '\n' ' ')
+  if [ -n "$DUP_SECS" ]; then
+    stage handbook failed
+    fail "手册里这些节号出现了不止一次：${DUP_SECS}。多半是混进了别的题的内容，逐节核对，把不属于本题的删掉"
+    return
+  fi
+  # 手册里出现同级别的题目的 name，说明是复制粘贴串了。
+  if [ -d "${PROJECT}/.." ]; then
+    OTHER_NAMES=$(for f in "${PROJECT}/../"*/challenge.yaml; do
+      [ -f "$f" ] || continue
+      sed -nE 's/^[[:space:]]*name:[[:space:]]*["'\'']?([^"'"'"'[:space:]]+).*/\1/p' "$f" | head -1
+    done | grep -vx "$(basename "$PROJECT")" | grep -v '^$' | sort -u)
+    if [ -n "$OTHER_NAMES" ]; then
+      HIT_OTHER=$(printf '%s\n' "$OTHER_NAMES" | while IFS= read -r on; do
+        [ -n "$on" ] && grep -qF "$on" "$expected" && echo "$on"
+      done | head -3 | tr '\n' ' ')
+      if [ -n "$HIT_OTHER" ]; then
+        stage handbook partial
+        partial "手册里出现了同批其他题目的 name：${HIT_OTHER}。确认不是复制粘贴串题"
+      fi
+    fi
+  fi
   echo "   手册 $(basename "$expected") ${skeleton}齐全，无待填项"
   stage handbook passed
 }
@@ -441,6 +468,16 @@ assert_provenance() {
         http://*|https://*|/*) continue;;   # 外部引用和绝对路径不核对
       esac
       [ -e "$m" ] && continue
+      # original_material 里常写裸文件名（P86_exploit.py），实际在 src/ 或 solve/ 里，
+      # 按「根目录 / src/ / solve/ / 附件目录 / 题目源码/ 任一命中」判定。
+      case "$m" in
+        */*) ;;   # 带路径的只在根目录核对
+        *)
+          for _d in src solve 附件 题目附件 题目源码 镜像 题目镜像; do
+            [ -e "$_d/$m" ] && continue 2
+          done
+          ;;
+      esac
       # 只记下不存在的，留给下面统一报
       PROV_MISSING_MATERIAL+=("$m")
     done < <(awk '
@@ -460,6 +497,48 @@ assert_provenance() {
     stage provenance passed
   fi
 }
+
+# ---------- 先判断目录形态：出题阶段的交付包 / 比赛现场的打包成品 / 归档
+# 交付物有三种形态，verify.sh 只对第一种做结构检查：
+#   1. 出题阶段交付包：src/ Dockerfile start.sh challenge.yaml README/ solve/
+#   2. 比赛现场打包成品：只有一个 <题目名>.tar，或 题目附件/ + 题目手册.md
+#   3. 比赛归档：题目镜像/ 题目源码/ 题目手册/
+# 后两种已经在平台上跑过、比赛用过了，结构检查对它们没有意义，
+# 别报一堆「没有 Dockerfile」「白名单外的条目」把真问题淹掉。
+if [ ! -f Dockerfile ] && [ ! -f start.sh ] && [ ! -f challenge.yaml ]; then
+  echo "== 目录形态"
+  ONLY_TAR=$(ls -1 *.tar 2>/dev/null | head -1)
+  if [ -n "$ONLY_TAR" ]; then
+    echo "   打包成品：只有镜像 tar $(basename "$ONLY_TAR")（$(du -h "$ONLY_TAR" | cut -f1)）"
+    stage delivery skipped
+    hint "这是比赛现场的打包成品，不是出题阶段的交付包。verify.sh 验的是出题阶段的目录结构，对打包成品不适用"
+    finish
+  fi
+  if [ -d 题目附件 ] && [ -f 题目手册.md ]; then
+    echo "   打包成品：题目附件/ + 题目手册.md"
+    echo "   附件 $(ls -1 题目附件 | wc -l | tr -d ' ') 个，手册 $(wc -l < 题目手册.md | tr -d ' ') 行"
+    stage delivery skipped
+    hint "这是比赛现场的打包成品。附件题没有可执行验证，确认附件能在干净环境打开即可"
+    finish
+  fi
+  if [ -d 题目源码 ] || [ -d 题目手册 ]; then
+    echo "   比赛归档：$(ls -d 题目镜像 题目源码 题目手册 2>/dev/null | tr '\n' ' ')"
+    stage delivery skipped
+    hint "这是比赛归档形态（镜像/源码/手册分开放），不是出题阶段的交付包"
+    finish
+  fi
+  # 附件题：只有 附件/（或 题目附件/）+ solve/，没有容器
+  ATT_DIR=""
+  [ -d 附件 ] && ATT_DIR=附件
+  [ -z "$ATT_DIR" ] && [ -d 题目附件 ] && ATT_DIR=题目附件
+  if [ -n "$ATT_DIR" ] || [ -f solve/solve.py ]; then
+    :   # 走后面的附件题分支
+  else
+    stage delivery failed
+    fail "目录形态无法识别：既没有 Dockerfile/start.sh/challenge.yaml，也没有 <题目名>.tar / 题目附件+题目手册.md / 题目源码+题目手册。确认是不是拿错了目录"
+    finish
+  fi
+fi
 
 echo "== 检查手册"
 assert_handbook
@@ -632,13 +711,29 @@ if [ -d src ] || [ -d 附件 ]; then
     -e 'AKIA[0-9A-Z]{16}' \
     -e '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' \
     src 附件 2>/dev/null \
-    | grep -viE 'placeholder|example|your_|changeme|<.*>|\$\{|FLAG|flag\{|test|demo|dummy|123456|password2|密码框' \
+    | grep -viE 'placeholder|example|your_|changeme|<.*>|\$\{|\{[a-zA-Z_]|FLAG|flag\{|FLAG_|test|demo|dummy|123456|password2|密码框|_USERNAME|_PASSWORD|_USER|_PASS|username=|password=|HIS_' \
     | head -5)
   if [ -n "$PII_HITS" ]; then
     stage hygiene partial
     partial "src/ 或 附件/ 里疑似有生产凭据或密钥，交付前逐条确认（都是发给选手的）：
 $(printf '%s\n' "$PII_HITS" | sed 's/^/     /')"
   fi
+  # src/ 和 附件/ 里的 flag 形态字符串：出题人的测试残留会随镜像发给选手。
+  # 真实事故：src/cache/trace.json 带真 flag 进了镜像；附件 test.py 明文写着真 flag。
+  # 排掉明显的占位/提示串（FLAG_NOT_WRITTEN、PLACEHOLDER、TODO 等），只报像真值的。
+  # 只看"去掉占位词之后还剩不剩"，占位词一大堆的整串不算。
+  FLAG_RESIDUE=""
+  for f in $(grep -rIlE '[A-Za-z0-9_]+\{[^}]{8,}\}' src 附件 题目附件 2>/dev/null | grep -v '\.md$' | head -40); do
+    [ -n "$(grep -oE '[A-Za-z0-9_]+\{[^}]{8,}\}' "$f" 2>/dev/null \
+      | grep -viE 'placeholder|not_written|not-written|change_?me|your_|example|dummy|fake|todo|xxxx|:[0-9]*[ds]\}|\{[A-Z_]+\}')" ] \
+      && FLAG_RESIDUE="$FLAG_RESIDUE $f"
+  done
+  FLAG_RESIDUE=$(printf '%s' "$FLAG_RESIDUE" | tr ' ' '\n' | grep -v '^$' | head -5 | tr '\n' ' ')
+  if [ -n "$FLAG_RESIDUE" ]; then
+    stage hygiene partial
+    partial "这些文件里有 flag 形态的字符串：$(printf '%s ' $FLAG_RESIDUE)。确认是占位值不是测试残留——真实 flag 随镜像发给选手，题目就白给了"
+  fi
+
   # 真实 PII：证件号、手机号密度高的数据文件。单条不算，文件里成批出现才报。
   PII_BULK=$(grep -rIlE '1[3-9][0-9]{9}' --include='*.sql' --include='*.csv' --include='*.json' src 附件 2>/dev/null | head -3)
   if [ -n "$PII_BULK" ]; then
@@ -737,14 +832,21 @@ solve_until() { # $1 = 要拿到的 Flag，$2 = 上一个 Flag（复查时用来
 # ---------- 构建前的静态检查：这些问题会让容器起不来，提前说清楚比翻日志快
 if [ ! -f Dockerfile ]; then
   # 附件题：没有容器，只检查交付结构和解题脚本。
-  if [ -f "${PROJECT}/solve/solve.py" ] || [ -d "${PROJECT}/附件" ]; then
+  ATT_DIR=""
+  [ -d "${PROJECT}/附件" ] && ATT_DIR="${PROJECT}/附件"
+  [ -z "$ATT_DIR" ] && [ -d "${PROJECT}/题目附件" ] && ATT_DIR="${PROJECT}/题目附件"
+  if [ -f "${PROJECT}/solve/solve.py" ] || [ -n "$ATT_DIR" ]; then
     echo "== 附件题（没有 Dockerfile，跳过容器验证）"
-    ATT=("${PROJECT}/附件"/*)
-    if [ ${#ATT[@]} -eq 0 ]; then
-      partial "附件/ 是空的，确认选手该拿到哪些文件"
+    if [ -z "$ATT_DIR" ]; then
+      stage attachments partial
+      partial "没有 附件/ 或 题目附件/ 目录，确认选手该拿到哪些文件"
+    elif [ -z "$(ls -A "$ATT_DIR" 2>/dev/null)" ]; then
+      stage attachments partial
+      partial "$(basename "$ATT_DIR")/ 是空的，确认选手该拿到哪些文件"
     else
-      echo "   附件 ${#ATT[@]} 个"
-      for a in "${ATT[@]}"; do echo "   - $(basename "$a")"; done
+      ATT_COUNT=$(ls -A "$ATT_DIR" 2>/dev/null | wc -l | tr -d ' ')
+      echo "   附件 ${ATT_COUNT} 个"
+      for a in "$ATT_DIR"/*; do echo "   - $(basename "$a")"; done
       stage attachments passed
     fi
     # 附件题也要用解题脚本确认题目真的能解，否则只证明目录结构像附件题。
@@ -880,6 +982,26 @@ if ! "${BUILD_CMD[@]}" --platform "$PLATFORM" -t "$IMAGE" . >"$BUILDLOG" 2>&1; t
 fi
 echo "   完成，用时 $(( $(date +%s) - T0 )) 秒"
 stage build passed
+
+# ---------- 交付的镜像 tar 必须和当前构建一致
+# 真实事故：改了 Dockerfile/start.sh 之后忘了重新 docker save，镜像/ 里的 tar 还是旧的
+# （start.sh 里还带着 touch /flag），平台按 tar 导入部署时改动全不生效，而 verify 只 build 不 load，看不出来。
+# 判据：docker image inspect 的 Id 与 tar manifest.json 里 Config 的末段必须一致。
+if [ -d 镜像 ] || [ -d 题目镜像 ]; then
+  TAR_DIR=""; [ -d 镜像 ] && TAR_DIR=镜像; [ -z "$TAR_DIR" ] && [ -d 题目镜像 ] && TAR_DIR=题目镜像
+  CUR_ID=$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null | sed 's/^sha256://')
+  for t in "$TAR_DIR"/*.tar; do
+    [ -f "$t" ] || continue
+    TAR_CFG=$(tar -xOf "$t" manifest.json 2>/dev/null \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0].get("Config",""))' 2>/dev/null \
+      | sed 's/\.json$//; s/^.*\///')
+    [ -n "$TAR_CFG" ] || continue
+    case "$CUR_ID" in
+      "$TAR_CFG"*) ;;
+      *) partial "$(basename "$t") 和当前构建不一致（tar Config ${TAR_CFG:0:12}… vs 当前 ${CUR_ID:0:12}…）。改了 Dockerfile/start.sh/src 之后要重新 docker save，否则平台按 tar 部署时改动不生效" ;;
+    esac
+  done
+fi
 
 # 官方 php/nginx/node 镜像的 docker-*entrypoint 会把参数原样 exec，不影响 /start.sh；其他 ENTRYPOINT 会吞掉它。
 ENTRY=$(docker image inspect -f '{{json .Config.Entrypoint}}' "$IMAGE" 2>/dev/null)
@@ -1050,6 +1172,30 @@ for p in "${PORTS[@]+"${PORTS[@]}"}"; do
   if [ -n "$CODE" ] && [ "$CODE" != 000 ]; then
     echo "   HTTP $CODE"
     [ "$CODE" -ge 500 ] && partial "端口 $p 返回 HTTP ${CODE}，服务可能有报错"
+    # 选手第一屏：root 路径 404/403 且没配 probe_path 时，选手打开看到的是错误页。
+    # 真实案例：nghttpx 题首页返回纯文本 NOT-FOUND，Agent 自陈"确实像糊弄"。
+    if { [ "$CODE" = 404 ] || [ "$CODE" = 403 ]; } && [ "$PROBE_PATH" = / ]; then
+      partial "端口 $p 的根路径返回 ${CODE}，选手打开就是错误页。有真实入口就在 challenge.yaml 的 verification.solve_probe.path 里指定，或把首页做成能说明这道题是什么的页面"
+    elif [ "$CODE" = 200 ]; then
+      # 200 但内容是一行 NOT-FOUND / OK / 错误 JSON，也是糊弄。
+      FIRST=$(curl -s --max-time 5 "http://127.0.0.1:${HP}${PROBE_PATH}" 2>/dev/null | head -c 400 | tr -s '[:space:]' ' ')
+      LOW=$(printf '%s' "$FIRST" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+      PLACEHOLDER=0
+      case "$LOW" in *not-found*|*notfound*) PLACEHOLDER=1;; esac
+      case "$LOW" in *'"error"'*|*'not implemented'*) PLACEHOLDER=1;; esac
+      if [ "$PLACEHOLDER" = 1 ]; then
+        partial "端口 $p 的首页返回的是占位内容（$(printf '%.60s' "$FIRST")）。选手打开第一屏必须能说明这道题是什么"
+      fi
+    fi
+    # 页面引用外网 CDN：比赛内网没有外网时页面直接裸奔。
+    if [ "$CODE" = 200 ]; then
+      CDN=$(curl -s --max-time 5 "http://127.0.0.1:${HP}${PROBE_PATH}" 2>/dev/null \
+        | grep -oE 'https?://(cdn\.jsdelivr\.net|unpkg\.com|fonts\.googleapis\.com|cdnjs\.cloudflare\.com|ajax\.googleapis\.com)[^"'"'"' >]*' \
+        | head -3 | tr '\n' ' ')
+      if [ -n "$CDN" ]; then
+        partial "端口 $p 的页面引用了外网 CDN：${CDN}。比赛内网通常无外网，页面资源要全部打包进镜像"
+      fi
+    fi
   else
     BANNER=$(curl -s --max-time 3 "telnet://127.0.0.1:$HP" </dev/null 2>/dev/null | LC_ALL=C tr -cd '[:print:]\n' | grep -v '^$' | head -2)
     if [ -n "$BANNER" ]; then
