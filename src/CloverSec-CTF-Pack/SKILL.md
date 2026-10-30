@@ -41,10 +41,20 @@ metadata:
 体检时逐题回答这五个问题，答不上来的去读源码，不要猜：
 
 1. 原始链路是几步？现在几步？少的那几步是什么？
-2. 原始防护（WAF、黑名单、`disable_functions`、权限校验）还在不在？
+2. 原始防护（WAF、黑名单、`disable_functions`、权限校验）还在不在？**光看代码在不在不够，要在起的容器里实测它真的拦得住。**
 3. 有没有被替换成等价但更容易的东西？比如 SROP 换成 trivial ret2win、竞态换成同步、需要反推的数据结构换成自编的。
 4. 有没有后门式简化？比如把 `/flag` 软链接直接放进 Web 根目录、把管理后台删掉、把鉴权改成默认放行。
 5. 服务拓扑和运行时版本对不对得上原题？
+
+**第 2 条单独强调。** 真实事故：重建的 SSO 题里 `ShiroConfiguration` 只有 `@Bean` 没有 `@Configuration`，`@ComponentScan` 扫不到，`BOOT-INF/lib` 里也没有 `shiro-spring-boot-web-starter`——**Shiro 完全没有生效，题目一度变成全接口未授权**。代码看起来都在，防护是死的。
+
+所以基线里要写一行「防护层：X，实测命令 + 预期结果」，交付前逐条跑：
+
+```text
+防护层：Shiro 鉴权
+实测：curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/user/saveUser
+预期：401 或 302（未登录被拦）；实际返回 200 说明防护没生效
+```
 
 五个问题里任何一个答"变了"，都在 `provenance.simplified` 里写清变了什么、为什么不能等价恢复。写不出来的就是没恢复到位，要停下来问用户。
 
@@ -161,6 +171,9 @@ Mobile  OSINT  OpposeAI  PPC  Pentest  Pwn  Quantum  RDG  Reverse  Web
 | 手册文件名 | `README/<主名>.md` | `README/Web-FastDestruct.md` |
 | 镜像 tag | 主名转小写连字符 | `web-fastdestruct:latest` |
 | 镜像 tar | `<主名>.tar` | `镜像/Web-FastDestruct.tar` |
+| `start.sh` 的 `APP_NAME` / 日志前缀 | 等于镜像 tag | `APP_NAME=web-fastdestruct` |
+
+**镜像 tag 只能用 `[a-z0-9._-]`。** 中文题名必须转成拼音或英文短名，转出来的名字写进 `challenge.yaml` 的 `metadata.image_tag`，手册 1.7 和 `start.sh` 都用这个 tag。真实事故：15 道题的名字全是中文，镜像 tag 变成 `AI-多智能体记忆投毒与命令执行:latest`，用户说「这也太离谱了」「这不扯淡呢」，最后六处一起改名。
 
 这是审计里最高频的问题：目录叫 `Web-FastDestruct`、tar 叫 `phar-fastdestruct.tar`、`challenge.yaml` 里又是第三个名字。平台按 `<题目名>.tar` 找镜像时找不到，一套交付变成两套命名。
 
@@ -187,6 +200,9 @@ Mobile  OSINT  OpposeAI  PPC  Pentest  Pwn  Quantum  RDG  Reverse  Web
 | 镜像 tar | `镜像/` | 平台通过导入 tar 部署，或用户要求离线交付时 |
 
 - 附件原样放进 `附件/`，不要改名、不要重新打包，除非原来的压缩包坏了。
+- **压缩包和解压目录二选一，不要两份都给。** 原题同时给了 zip 和解压目录时，只交 zip（或只交目录），否则选手拿到重复内容，手册里写 `附件/netdomains` 实际却在 `附件/选手附件/` 这种事就会出现。
+- 附件里不能有 `__MACOSX/`、`.DS_Store`，也不能有 0 字节文件。macOS 打包出来的 zip 一定带 `__MACOSX`，在 Linux 上重打或先清掉。
+- 交付前 `unzip -l` 看一眼：文件名有没有乱码、有没有 `__MACOSX`。
 - 附件要问清楚：哪些文件发给选手。Pwn 题的二进制、libc、loader 是附件，Dockerfile 和 solve.py 不是。
 - 附件控制在能下载的体积内；大文件先问用户。
 - 镜像 tar 用 `docker save` 导出，文件名 `<题目名>.tar`：
@@ -416,6 +432,7 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 - 静态 Flag 题和附件题没有测试 Flag，用 `--expect-flag '<手册 1.5 里的值>'` 断言。RDG 题自动走 check 判定。
 - QEMU 题加 `--ready-cmd`：端口监听不等于 guest 起来了，不加会把 solve 的时间预算全花在启动上。
 - 批量交付时加 `--similarity`：检查同批手册有没有套模板。
+- **交付前最后一轮必须加 `--no-cache`**：带缓存构建会复用旧层和旧数据库卷，建表 SQL 报错、依赖装错都能被掩盖。真实事故：一道题建表 SQL 有重复的 `AUTO_INCREMENT`，104 张表只建到 95 张，反复构建一直没暴露，最后在无缓存重建时才炸出来。
 - `failed`：按输出里的原因和日志改，再跑，直到 `passed`。排查时加 `--keep` 保留容器，用 `docker logs` 看输出。
 - `partial`：在交付说明里写清是哪一项。
 - `environment_failed`：只说明本机跑不动，换原生 amd64 重跑，不能说成通过。
@@ -460,11 +477,29 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 [ ] 14. 动态 Flag 题：镜像里有 /bin/bash；flag_script 写进手册 1.5
 [ ] 15. verify.sh 跑到 passed（原始架构上）；跑不动的标 environment_failed 并说明卡在哪
 [ ] 16. 非预期解法：默认口令、注册用户、直接访问、报错泄露，逐项试过并处理
-[ ] 17. 五处命名一致：目录名 = challenge.yaml name = README 文件名 = 镜像 tag = tar 名
-[ ] 18. 交付说明里逐题列出：难度基线 vs 实际交付、provenance.status、verify 结论、还缺什么
+[ ] 17. 六处命名一致：目录名 = challenge.yaml name = README 文件名 = 镜像 tag = tar 名 = start.sh 的 APP_NAME
+[ ] 18. 防护层实测：原题的 WAF / 黑名单 / disable_functions / 鉴权在容器里真的拦得住（附命令和预期）
+[ ] 19. 敏感数据：src/ 和 附件/ 里没有真实 PII、生产库地址、口令、私钥
+[ ] 20. 交付包可独立复制：find -type f -links +1 为空（多包共享硬链接时单独拷一个会丢内容）
+[ ] 21. 最后一轮 verify 带 --no-cache；交付说明里逐题列出：难度基线 vs 实际交付、provenance.status、verify 结论、还缺什么
 ```
 
-`verify.sh` 覆盖第 3、4 条全部，第 12 条查 LF、shebang、`exec`/`wait` 和别的平台合同，第 14 条查 `/bin/bash`，第 15 条查本机能否跑到 `passed`；第 5 条只查文件名、骨架、事实字段和 TODO，不查判断部分写了什么；第 9 条查 YAML 语法、provenance 取值枚举、`name` 与目录名一致、`original_material` 路径存在；第 6 条只做到"能复跑"，照手册手工走一遍要人做；第 10、11、13、16、17 条靠人读。脚本查不出来的项，别用"verify passed"替代。
+`verify.sh` 覆盖的：
+
+| 条 | 覆盖程度 |
+|---|---|
+| 3、4 | 全部：白名单外的顶层条目判 `failed`，垃圾文件判 `failed`，附件 0 字节 / `__MACOSX` 报警 |
+| 9 | YAML 语法（需 PyYAML，没装会提示）、provenance 取值枚举、`name` 与目录名一致、`original_material` 路径存在 |
+| 12 | LF、shebang、`exec`/`wait`、别的平台合同、`start.sh` 写 flag |
+| 14 | 镜像里有没有 `/bin/bash` |
+| 15 | 本机能否跑到 `passed` |
+| 19 | 凭据 / 私钥形态，只报警告 |
+| 20 | 硬链接检查 |
+| 5 | **只查**文件名、骨架、事实字段和 TODO，不查判断部分写了什么 |
+| 6 | 只做到"能复跑"，照手册手工走一遍要人做 |
+| 10、11、13、16、17、18 | 靠人读，脚本不看 |
+
+脚本查不出来的项，别用"verify passed"替代。
 
 ### 垃圾清理一键命令
 
@@ -504,6 +539,30 @@ Pwn、Linux 内核、依赖堆布局（libc 段地址、heap base、JIT 布局�
 - **远程 `/tmp` 和 Home 是多个人共用的。** tar 包名带随机后缀，解压目录单独开一层，解压后核对 md5，跑完删掉。用同名 tar 会让验证实际构建的是别人的镜像，连跑三次"失败"都是假象。
 - 远程解压目录的 `basename` 必须等于交付目录名，否则手册文件名检查会失败。
 - 跑完清掉自己的容器、镜像和临时目录。
+
+## 交付前扫 PII 和生产凭据
+
+**这句写死：迁移企业源码、真实业务系统、生产归档时，交付前必须扫一遍真实客户数据和凭据。** 题目发出去等于把客户数据发出去了。
+
+真实事故：一道企业备案系统的题，`Export/temp/` 里带着 **8 万条真实企业备案 PII**（企业名、证件号、手机号、邮箱、联系人），配置文件注释里还有真实生产库地址和口令。
+
+要扫的东西：
+
+| 类型 | 怎么找 |
+|---|---|
+| 真实姓名 + 证件号 + 手机号 + 邮箱 | 数据文件里成批出现（单条不算） |
+| 数据库连接串 | `jdbc:`、`mysql://`、`postgres://`、`host=` |
+| 口令 / 密钥 | `password=`、`passwd=`、`AKIA...`、`BEGIN PRIVATE KEY` |
+| 内网地址 | `10.x`、`172.16-31.x`、`192.168.x`、其他固定公网 IP |
+
+处理方式：
+
+1. **能删的删**：样例数据目录、测试导出、备份文件，交付物里不出现。
+2. **不能删的换成合成值**：证件号换成明显假的格式，手机号换成 `13800000000` 这类，邮箱换成 `user@example.com`。
+3. **换完在 `provenance.simplified` 记一笔**：换了什么、为什么换。
+4. **提醒用户原始材料还在**：桌面上的原始 zip、归档目录不在交付范围，但里面还是真数据。
+
+`verify.sh` 会扫 `src/` 和 `附件/` 里的凭据形态并报警告，但扫不出全部——成批的真实业务数据要自己看。
 
 ## 关于题目本身的安全内容
 

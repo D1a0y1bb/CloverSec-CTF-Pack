@@ -2,6 +2,44 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.6 - 2026-10-30
+
+在 v6.3.5 基础上，合并组 A、组 C 两份会话复盘的剩余发现。组 C 覆盖 5 个会话 + 6 份审计报告（20 个包、约 176 条确定问题）。
+
+### 修复
+
+- **`verify.sh` 不再用 `-u 0` 掩盖 Dockerfile `USER` 导致的写 Flag 失败**。平台注入脚本用 `exec_run` 不传 user，继承镜像 USER；镜像写了 `USER 1000:1000` 而 flag 属主是 root 时平台写不进去，而 `docker exec -u 0` 照样成功，verify 报 passed。现在按镜像 USER 再写一次，失败即 failed。真实事故：5 道题中招。
+- **`references/platform.md` 的「平台以 root 执行 docker exec」是事实错误**，`docker exec` 默认继承镜像 `USER`。整段已换成真实机制。
+- **`provenance.verify` 增加 `no_flag_contract` 终态**。原题没有 Flag 合同、按构造不可能验证 Flag 的题（证书固定文案、`flagFormat: (no flag format)`），原来只能写非法的 `partial`。
+- **没装 PyYAML 时明确提示**，不再静默退回文本匹配。`{{flag}}` 写进 flow 序列这类语法错误只有真解析才查得出。
+- **白名单外的顶层条目一律判 failed**。之前 305MB 的 `vendor/` 目录、夹带真实 flag 的 DSH 会话 zip 都能以 passed 交付。
+- **`.DS_Store` / `__pycache__` / `*.pyc` 改判 failed**，不再只是 partial。
+- **`start.sh` 写或 chmod flag 文件报 partial**。真实交付里 10 道题踩了这条。
+- **新增硬链接检查**：多包共享 inode 时单独复制会丢内容。真实事故：两题共用 5114 个硬链接。
+- **新增附件卫生检查**：0 字节文件、`__MACOSX`。
+- **新增敏感数据扫描**：`src/`、`附件/` 里的口令、AKIA、私钥、成批手机号形态的数据。真实事故：企业备案题带着 8 万条真实 PII 和生产库口令。
+
+### 新增
+
+- **`verify.sh --no-cache`**：交付前最后一轮必须带。真实事故：建表 SQL 有重复 `AUTO_INCREMENT`，104 张表只建到 95 张，带缓存构建一直没暴露。
+- **SKILL.md 新增「交付前扫 PII 和生产凭据」**：迁移企业源码时必须做，含扫描清单和处理方式。
+- **SKILL.md 难度基线补「防护层实测」**：光看代码在不在不够，要在容器里实测拦不拦得住。真实事故：重建的 SSO 题 Shiro 完全没生效，题目变成全接口未授权。
+- **SKILL.md 命名链补 `start.sh` 的 `APP_NAME`**：六处派生。真实事故：15 道题中文名做镜像 tag，`AI-多智能体记忆投毒与命令执行:latest`。
+- **SKILL.md 附件规则细化**：压缩包和解压目录二选一、不能带 `__MACOSX`、不能有 0 字节文件。
+- **SKILL.md 自检清单扩到 21 条**：新增防护层实测、敏感数据、可独立复制、`--no-cache`。
+- **`references/batch.md` 新增「只读审计也要隔离」**：解包用独立临时目录、`python3 -B`、临时脚本不落题目目录。真实事故：审计员 `tar` 少写 `-C` 把镜像层解到题目根目录，多出一个 `flag`；用户要求「给出证据证明未被修改」。
+- **`references/batch.md` 新增「静态审计的结论要运行期复核」**：S1/S2 没附运行期证据只能记待确认。真实误报：只读 INSERT 没读文件尾 UPDATE。
+- **`references/batch.md` 补「一台机器不要并发跑多道」**：43 道并发验证，一道 1846 秒假失败，触发全量重跑。
+- **`references/batch.md` 新增「单题止损线」**：同一道题超过 10 轮或 1 小时停下报告；官方解在本环境不可复现时标 `incomplete` 是合法交付。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- 原有 7 项附件回归全过。
+- 新增检查逐项实测：`USER 1000:1000` → `flag_write: failed`（exit 1）；无 USER → passed；`vendor/` 目录 → `delivery: failed`；`.DS_Store` → `delivery: failed`；硬链接 → `delivery: partial`；`start.sh` 写 flag → partial；`jdbc.password=...` → 凭据警告；正常附件题仍然 `passed`。
+- 三个 CI 步骤本地全部通过。
+- `--similarity` 在 AI-81-DVLAA 81 题上仍精准标出 9 份套模板手册。
+
 ## v6.3.5 - 2026-10-30
 
 基于 30 个会话、205 个子 Agent 会话、两个交付产物目录（AI-81-DVLAA 81 题、EXP-23-CVEnew 8 题）的复盘，以及凌虚平台源码核对。

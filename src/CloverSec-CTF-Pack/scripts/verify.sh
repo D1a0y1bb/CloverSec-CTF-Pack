@@ -32,6 +32,8 @@ usage() {
   --ready-timeout N   等待 --ready-cmd 返回 0 的秒数，默认跟 --timeout 相同
   --similarity        对同批目录的手册做雷同度检查（只报警告，不改结论）。默认关闭
   --similarity-report PATH  雷同度报告写到 PATH，不给就只打印
+  --no-cache          构建时禁用 Docker 缓存。交付前最后一轮必须带这个：
+                      带缓存构建会复用旧层和旧数据库卷，建表 SQL 报错、依赖装错都被掩盖。
   --timeout N         等待服务开始监听的秒数，默认 60
   --keep              结束后保留容器和镜像，便于进去排查
   --report PATH       把构建日志、端口结果和阶段结论写成 JSON 报告；不给就不写。
@@ -51,7 +53,7 @@ EOF
 PROJECT=""; PORTS=(); FLAGPATH=""; SOLVE=""; CHECK=""; FORCE_RDG=0
 PLATFORM="linux/amd64"; KEEP=0; REPORT=""; EXPECT_FLAG=""; FLAG_ROTATE=1
 RUN_ARGS_EXTRA=()
-READY_CMD=""; READY_TIMEOUT=""; SIMILARITY=0; SIMILARITY_REPORT=""
+READY_CMD=""; READY_TIMEOUT=""; SIMILARITY=0; SIMILARITY_REPORT=""; NO_CACHE=0
 # Java、php-fpm、MySQL 冷启动常见 10~40 秒，amd64 模拟运行还会更慢，60 秒留出余量。
 START_TIMEOUT=60
 # 解题脚本一般几秒结束；竞态类题目要多跑几轮，给到 120 秒。QEMU 题用 --solve-timeout 调大。
@@ -74,6 +76,7 @@ while [ $# -gt 0 ]; do
     --ready-cmd) READY_CMD="${2:?--ready-cmd 需要参数}"; shift 2;;
     --ready-timeout) READY_TIMEOUT="${2:?--ready-timeout 需要参数}"; shift 2;;
     --similarity) SIMILARITY=1; shift;;
+    --no-cache) NO_CACHE=1; shift;;
     --similarity-report) SIMILARITY_REPORT="${2:?--similarity-report 需要参数}"; shift 2;;
     --timeout) START_TIMEOUT="${2:?--timeout 需要参数}"; shift 2;;
     --keep) KEEP=1; shift;;
@@ -203,7 +206,13 @@ trap cleanup EXIT
 # 能用 PyYAML 就真解析一遍：YAML 语法错误（flow 序列里带 {{flag}} 这种）只有真解析才查得出来，
 # grep 读得出来但平台的解析器读不出来。没有 PyYAML 时退回 awk 取值。
 HAVE_PYYAML=0
-if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then HAVE_PYYAML=1; fi
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+  HAVE_PYYAML=1
+elif [ -f challenge.yaml ]; then
+  # 没有 PyYAML 时只能文本匹配，YAML 语法错误查不出来。换一台机器上跑就"变绿"的题
+  # 多半就是这种情况，必须说出来，不能静默降级。
+  hint "没装 PyYAML，challenge.yaml 只做了文本匹配，语法错误查不出来（StoryCreator 那种 {{flag}} 写进 flow 序列的题会被漏掉）。装一下：pip install pyyaml"
+fi
 
 YAML_ERROR=""
 yaml_probe() { # 输出 TSV：字段名<Tab>值
@@ -408,7 +417,7 @@ assert_provenance() {
     if [ "$YAML_PROV_VERIFY" = pending ] \
        || grep -qE '^[[:space:]]+verify:[[:space:]]*(""|'"''"'|[[:space:]]*)$' challenge.yaml; then
       stage provenance loaded
-      fail "provenance.verify 是空的。填 passed / environment_failed / incomplete，空着等于没给结论"
+      fail "provenance.verify 是空的。填 passed / environment_failed / incomplete / no_flag_contract，空着等于没给结论"
       return
     fi
     # 枚举值之外的值一律不认。"verified""ok"这类自造取值读起来像通过，实际平台和下一环都不认。
@@ -419,9 +428,9 @@ assert_provenance() {
          return;;
     esac
     case "$YAML_PROV_VERIFY" in
-      ""|passed|environment_failed|incomplete) ;;
+      ""|passed|environment_failed|incomplete|no_flag_contract) ;;
       *) stage provenance loaded
-         fail "provenance.verify 取值不合法：${YAML_PROV_VERIFY}。只能取 passed / environment_failed / incomplete"
+         fail "provenance.verify 取值不合法：${YAML_PROV_VERIFY}。只能取 passed / environment_failed / incomplete / no_flag_contract（原题没有 Flag 合同、按构造不可能验证 Flag 的题用这个）"
          return;;
     esac
     # 声称保留了原始材料，就要能证明这些文件真的在。审查里出现过 original_material 列出不存在路径的情况。
@@ -549,25 +558,33 @@ DELIVERY=passed
 if [ ${#EXTRA[@]} -gt 0 ]; then
   echo "   多余文件："
   for e in "${EXTRA[@]}"; do echo "   - $e"; done
-  HARD_EXTRA=()
-  for e in "${EXTRA[@]}"; do
-    case "$e" in
-      # 报告、验证脚本副本、内部工作文件（_PACK_SPEC.md 这类）是习惯性残留，直接判 failed。
-      # 根目录 README.md 单独列出：手册在 README/ 目录里。
-      verify.sh|*verify.json|verify-report.json|*.pyc|__pycache__|.venv|_*|README.md) HARD_EXTRA+=("$e");;
-    esac
-  done
-  if [ ${#HARD_EXTRA[@]} -gt 0 ]; then
-    DELIVERY=failed
-    fail "交付目录里有不该出现的文件：${HARD_EXTRA[*]}。交付目录只留 Skill 白名单里的内容，报告写到系统临时目录，内部工作文件放到交付目录之外"
-  else
-    DELIVERY=partial
-    partial "交付目录有多余文件：${EXTRA[*]}。确认它们是不是交付物，不是就删掉"
-  fi
+  # 白名单以外的顶层条目一律 failed，不再分软硬。
+  # 之前只把 verify.sh/报告/内部文件判 failed、其余判 partial，结果 305MB 的 vendor 目录、
+  # 夹带真实 flag 的 DSH 会话 zip 都能以 passed 交付出去。
+  DELIVERY=failed
+  fail "交付目录里有白名单外的条目：${EXTRA[*]}。单个题目录只允许 src/ Dockerfile start.sh challenge.yaml flag README/ solve/，按需加 附件/ 镜像/ last/（RDG 题另有 check/ changeflag.sh ttyd 等）。多出来的要么删掉，要么确认后加进白名单"
 fi
 if [ ${#JUNK[@]} -gt 0 ]; then
-  [ "$DELIVERY" = passed ] && DELIVERY=partial
-  partial "交付目录里有垃圾文件：${JUNK[*]}。用 find 加 -delete 清掉，用 Finder 打开过目录后要重扫"
+  # .DS_Store / __pycache__ / *.pyc 是纯垃圾，不是"待确认的多余文件"，判 failed。
+  DELIVERY=failed
+  fail "交付目录里有垃圾文件：${JUNK[*]}。一条命令清掉：find <交付根> \\( -name .DS_Store -o -name __pycache__ -o -name '*.pyc' \\) -print -delete"
+fi
+if [ "$DELIVERY" = passed ]; then
+  # 两个包共用硬链接时，单独复制其中一个会丢内容——交付包必须能独立拷走。
+  HARDLINK=$(find "$PROJECT" -type f -links +1 -print 2>/dev/null | head -5)
+  if [ -n "$HARDLINK" ]; then
+    DELIVERY=partial
+    partial "交付目录里有硬链接文件（多包共享同一 inode），单独复制这个包会丢内容。逐个 cp 一遍即可拆开：$(printf '%s ' $HARDLINK)"
+  fi
+fi
+if [ "$DELIVERY" = passed ]; then
+  # 选手附件必须是能独立打开的：0 字节、坏 zip、macOS 垃圾都算。
+  if [ -d 附件 ]; then
+    EMPTY_ATT=$(find 附件 -type f -size 0 -print 2>/dev/null | head -3)
+    [ -n "$EMPTY_ATT" ] && { DELIVERY=partial; partial "附件里有 0 字节文件：$(printf '%s ' $EMPTY_ATT)，选手拿到也解不了"; }
+    MACOS_JUNK=$(find 附件 \( -name '__MACOSX' -o -name '.DS_Store' \) -print 2>/dev/null | head -3)
+    [ -n "$MACOS_JUNK" ] && { DELIVERY=partial; partial "附件里带 macOS 打包垃圾：$(printf '%s ' $MACOS_JUNK)。在 Linux 上重打，或清除后再交付"; }
+  fi
 fi
 [ "$DELIVERY" = passed ] && echo "   干净"
 stage delivery "$DELIVERY"
@@ -584,10 +601,49 @@ if [ -f start.sh ]; then
   if ! grep -vE '^[[:space:]]*#' start.sh | grep -qE '(^|[[:space:]])(exec|wait)([[:space:]]|$)'; then
     partial "start.sh 里既没有 exec 也没有 wait，确认主服务是怎么前台运行、退出时容器跟着退出的"
   fi
+  # 平台注入脚本会自己写 flag，start.sh 再写一遍会打架：要么把平台写的值覆盖掉，
+  # 要么在反序执行时把占位值写死。真实交付里 10 道题踩了这条。
+  FLAG_WRITE_LINES=$(grep -vE '^[[:space:]]*#' start.sh \
+    | grep -nE '(>|>>)[[:space:]]*[^[:space:]]*flag|chmod[[:space:]]+[0-7]+[[:space:]]+[^[:space:]]*flag|printf[^|]*/[^[:space:]]*flag' \
+    2>/dev/null | head -3)
+  if [ -n "$FLAG_WRITE_LINES" ]; then
+    stage hygiene partial
+    partial "start.sh 里在写或改 flag 文件：${FLAG_WRITE_LINES//$'\n'/; }。平台注入的脚本自己会写 Flag，start.sh 再写一遍会覆盖或写死占位值。只有「平台用环境变量传 Flag」和「题目按原设计生成静态 Flag」两个例外，其余删掉"
+  fi
   # 只为四叶草平台出的题不需要环境变量兼容段，照抄模板会把别的平台的合同带进交付物。
   if grep -qE 'GZCTF_FLAG|DASFLAG' start.sh; then
     stage hygiene partial
     partial "start.sh 里有 GZCTF_FLAG / DASFLAG 兼容段。只为四叶草平台出的题不需要加，确认这道题真的要在那些平台跑，否则删掉"
+  fi
+fi
+
+# ---------- 敏感数据扫描：客户 PII 和生产凭据不能随交付物发出去
+# 真实事故：企业备案题带着 8 万条真实企业 PII（企业名、证件号、手机号、邮箱），
+# 配置文件注释里还有生产库地址和口令。题目发出去等于把客户数据发出了。
+# 只报警告不改结论——正常题目也会有邮箱、内网地址，需要人判断。
+if [ -d src ] || [ -d 附件 ]; then
+  PII_HITS=$(grep -rInE \
+    --include='*.sql' --include='*.csv' --include='*.json' --include='*.properties' \
+    --include='*.yml' --include='*.yaml' --include='*.conf' --include='*.php' \
+    --include='*.py' --include='*.java' --include='*.js' --include='*.env' \
+    -e '密码[[:space:]]*[:=][[:space:]]*[^[:space:]]{4,}' \
+    -e 'password[[:space:]]*[:=][[:space:]]*[^[:space:]]{4,}' \
+    -e 'passwd[[:space:]]*[:=]' \
+    -e 'AKIA[0-9A-Z]{16}' \
+    -e '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' \
+    src 附件 2>/dev/null \
+    | grep -viE 'placeholder|example|your_|changeme|<.*>|\$\{|FLAG|flag\{|test|demo|dummy|123456|password2|密码框' \
+    | head -5)
+  if [ -n "$PII_HITS" ]; then
+    stage hygiene partial
+    partial "src/ 或 附件/ 里疑似有生产凭据或密钥，交付前逐条确认（都是发给选手的）：
+$(printf '%s\n' "$PII_HITS" | sed 's/^/     /')"
+  fi
+  # 真实 PII：证件号、手机号密度高的数据文件。单条不算，文件里成批出现才报。
+  PII_BULK=$(grep -rIlE '1[3-9][0-9]{9}' --include='*.sql' --include='*.csv' --include='*.json' src 附件 2>/dev/null | head -3)
+  if [ -n "$PII_BULK" ]; then
+    stage hygiene partial
+    partial "这些文件里成批出现手机号形态的数据，确认不是真实客户 PII：$(printf '%s ' $PII_BULK)。真实 PII 必须换成合成数据，并在 provenance 记一笔"
   fi
 fi
 
@@ -817,6 +873,7 @@ BUILD_CMD=(docker build)
 if docker buildx version >/dev/null 2>&1; then
   BUILD_CMD=(docker buildx build --load)
 fi
+[ "$NO_CACHE" = 1 ] && BUILD_CMD+=(--no-cache)
 if ! "${BUILD_CMD[@]}" --platform "$PLATFORM" -t "$IMAGE" . >"$BUILDLOG" 2>&1; then
   echo "   ---- 构建日志最后 40 行"; tail -40 "$BUILDLOG" | sed 's/^/   | /'
   stage build failed; fail "docker build 失败"; finish
@@ -901,9 +958,19 @@ case "$YAML_FLAG_MODE" in static) STATIC_FLAG=1;; esac
 
 TESTFLAG="flag{verify_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')}"
 TESTFLAG2="flag{rotate_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')}"
+# 平台写 Flag 用的是容器内默认用户（exec_run 不传 user，继承镜像的 USER）。
+# 而题目程序可能在 Dockerfile 里写了 USER 1000:1000，这时平台照样以 1000 身份去写，
+# 目标文件属主是 root 就写不进去。所以这里分两次：
+#   -u 0 是给"确认写入链路本身通不通"用的；
+#   默认用户那次是真实模拟平台，这才是判据。
 write_flag() { # $1 = 要写入的值
   docker exec -u 0 "$CONTAINER" sh -c 'printf "%s\n" "$1" > "$2"' sh "$1" "$FLAGPATH" 2>/dev/null
 }
+write_flag_as_platform() { # $1 = 要写入的值；不传 -u，继承镜像 USER
+  docker exec "$CONTAINER" sh -c 'printf "%s\n" "$1" > "$2"' sh "$1" "$FLAGPATH" 2>/dev/null
+}
+# 镜像里有没有显式 USER（没有时 exec 就是 root，两次写入等价，不用额外测）
+IMAGE_USER=$(docker image inspect -f '{{.Config.User}}' "$IMAGE" 2>/dev/null)
 # 解题输出里必须出现的值。平台写 Flag 的题是随机测试 Flag；静态 Flag 题是镜像里那个值。
 WANT_FLAG="$TESTFLAG"
 if [ "$STATIC_FLAG" = 1 ]; then
@@ -931,7 +998,19 @@ else
       stage flag_write partial
       partial "题目没有 Flag 合同：challenge.yaml 没有 flag.path，镜像里也没有占位 Flag 文件。平台能写进 ${FLAGPATH}，但程序未必读它，先补上读取逻辑"
     else
-      echo "   回读一致（${MODE}）"; stage flag_write passed
+      echo "   回读一致（${MODE}）"
+      stage flag_write passed
+      # 镜像里写了 USER 时，平台注入的那个 exec 会以那个身份执行，写 root 属主的
+      # 目标文件会 Permission denied。用 -u 0 写是测不出来的，必须按平台身份再试一次。
+      if [ -n "$IMAGE_USER" ]; then
+        echo "== 按镜像 USER（${IMAGE_USER}）模拟平台写入"
+        if write_flag_as_platform "$TESTFLAG"; then
+          echo "   镜像默认用户能写入"
+        else
+          stage flag_write failed
+          fail "镜像设了 USER ${IMAGE_USER}，平台注入脚本会以这个身份执行，写不进 ${FLAGPATH}（属主是 root 时必然失败）。改成目标文件属主随 USER，或去掉 Dockerfile 的 USER，或在 flag_script 里 sudo/chown。用 root 身份 docker exec 测是测不出来的"
+        fi
+      fi
     fi
   else
     stage flag_write failed
