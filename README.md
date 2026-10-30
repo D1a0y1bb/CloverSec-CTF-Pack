@@ -212,7 +212,17 @@ provenance:
 
 ## Flag 约定
 
-平台起容器后，直接把本场的动态 Flag 写进 `challenge.yaml` 中 `flag.path` 指向的文件。这个路径必须是**程序实际读取的那个**——先打开源码找到读 Flag 的那一行再填：
+### 动态 Flag 必须有 `/bin/bash`
+
+平台的动态 Flag 是**用 `/bin/bash` 执行一段注入脚本**的：出题人在后台填 `flag_script`，平台把它塞进容器叫 `/changeflag.sh`，然后 `/bin/bash /changeflag.sh` 执行，失败重试 30 次。
+
+**镜像里没有 `/bin/bash`，Flag 就写不进去**，而且失败是静默的——选手拿到占位值，平台只提示"环境启动异常"。alpine 系镜像要显式 `RUN apk add --no-cache bash`；distroless / scratch 只能用静态 Flag。
+
+`verify.sh` 构建后会探测这一项，缺了直接判 `failed`。
+
+### flag.path
+
+必须是**程序实际读取的那个文件**——先打开源码找到读 Flag 的那一行再填：
 
 | 题型 | 常用路径 |
 |---|---|
@@ -225,7 +235,11 @@ provenance:
 
 程序要在每次请求时读取 Flag 文件。启动时读一次存进变量（Python 模块级变量、Java `static` 块、fork 前 import 的模块），平台换了 Flag 也不会生效；`verify.sh` 换第二个 Flag 再解一次就是为了抓这个。
 
-**静态 Flag 题**（平台不写 Flag，只比对选手提交的字符串）在 `challenge.yaml` 里写 `flag.mode: static`，手册 1.5 写「平台覆盖方式：无，本题为静态 Flag」。多小问拼完整 Flag、多出来的占位文件放哪儿，见 [references/platform.md](src/CloverSec-CTF-Pack/references/platform.md)。
+平台写入还**晚于服务启动**（实测多数 1~4 秒，偶发 61 秒）。要把 Flag 搬进配置文件、数据库或 QEMU guest 的题，必须等"平台真的写完了"，不能只判文件存在——模板见 [references/special.md](src/CloverSec-CTF-Pack/references/special.md)。
+
+`solve.py` 不许假设 Flag 的长度和字符集。真实踩过的坑：只认 `flag{` 前缀、39 字符因向下取整少一位、`&` 被 XML 转义成 `&amp;`。
+
+**静态 Flag 题**（平台不写 Flag，只比对选手提交的字符串）在 `challenge.yaml` 里写 `flag.mode: static`，手册 1.5 写「平台覆盖方式：无，本题为静态 Flag」，并写明这个值从哪考证来的。占位值必须是明显的占位，不能是真实形态的值。多小问拼完整 Flag、多出来的占位文件放哪儿，见 [references/platform.md](src/CloverSec-CTF-Pack/references/platform.md)。
 
 ## 仓库结构
 

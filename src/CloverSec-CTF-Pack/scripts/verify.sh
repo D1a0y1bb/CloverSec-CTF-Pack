@@ -26,6 +26,12 @@ usage() {
   --platform P        构建和运行的平台，默认 linux/amd64（与比赛平台一致）
   --run-arg ARG       docker run 额外参数，可重复。需要 KVM 或网络能力的题用，
                       例如 --run-arg --device=/dev/kvm --run-arg --cap-add=NET_ADMIN
+  --ready-cmd CMD     端口开始监听后再执行的就绪命令（在宿主机上跑），返回 0 才算服务真的可用。
+                      QEMU 题必用：端口一开就判"已就绪"会把 solve 的时间预算吃在启动上。
+                      可用 <PORT> 占位第一个端口，例如 --ready-cmd 'ssh -o ConnectTimeout=3 root@127.0.0.1 -p <PORT> true'
+  --ready-timeout N   等待 --ready-cmd 返回 0 的秒数，默认跟 --timeout 相同
+  --similarity        对同批目录的手册做雷同度检查（只报警告，不改结论）。默认关闭
+  --similarity-report PATH  雷同度报告写到 PATH，不给就只打印
   --timeout N         等待服务开始监听的秒数，默认 60
   --keep              结束后保留容器和镜像，便于进去排查
   --report PATH       把构建日志、端口结果和阶段结论写成 JSON 报告；不给就不写。
@@ -45,6 +51,7 @@ EOF
 PROJECT=""; PORTS=(); FLAGPATH=""; SOLVE=""; CHECK=""; FORCE_RDG=0
 PLATFORM="linux/amd64"; KEEP=0; REPORT=""; EXPECT_FLAG=""; FLAG_ROTATE=1
 RUN_ARGS_EXTRA=()
+READY_CMD=""; READY_TIMEOUT=""; SIMILARITY=0; SIMILARITY_REPORT=""
 # Java、php-fpm、MySQL 冷启动常见 10~40 秒，amd64 模拟运行还会更慢，60 秒留出余量。
 START_TIMEOUT=60
 # 解题脚本一般几秒结束；竞态类题目要多跑几轮，给到 120 秒。QEMU 题用 --solve-timeout 调大。
@@ -64,6 +71,10 @@ while [ $# -gt 0 ]; do
     --rdg) FORCE_RDG=1; shift;;
     --platform) PLATFORM="${2:?--platform 需要参数}"; shift 2;;
     --run-arg) RUN_ARGS_EXTRA+=("${2:?--run-arg 需要参数}"); shift 2;;
+    --ready-cmd) READY_CMD="${2:?--ready-cmd 需要参数}"; shift 2;;
+    --ready-timeout) READY_TIMEOUT="${2:?--ready-timeout 需要参数}"; shift 2;;
+    --similarity) SIMILARITY=1; shift;;
+    --similarity-report) SIMILARITY_REPORT="${2:?--similarity-report 需要参数}"; shift 2;;
     --timeout) START_TIMEOUT="${2:?--timeout 需要参数}"; shift 2;;
     --keep) KEEP=1; shift;;
     --report) REPORT="${2:?--report 需要参数}"; shift 2;;
@@ -83,6 +94,8 @@ done
 # 非数字的 --timeout 会让下面的等待循环永远不超时，先挡住。
 is_num "$START_TIMEOUT" || { echo "failed: --timeout 需要整数秒，收到 '${START_TIMEOUT}'"; exit 2; }
 is_num "$SOLVE_TIMEOUT" || { echo "failed: --solve-timeout 需要整数秒，收到 '${SOLVE_TIMEOUT}'"; exit 2; }
+[ -n "$READY_TIMEOUT" ] || READY_TIMEOUT="$START_TIMEOUT"
+is_num "$READY_TIMEOUT" || { echo "failed: --ready-timeout 需要整数秒，收到 '${READY_TIMEOUT}'"; exit 2; }
 # 非数字端口会让 listen_state 永远匹配不上，白等到超时才报错，先挡住。
 for p in "${PORTS[@]+"${PORTS[@]}"}"; do
   is_num "$p" || { echo "failed: --port 需要整数端口，收到 '${p}'"; exit 2; }
@@ -243,13 +256,14 @@ dump("expose_ports", "challenge.expose_ports", "expose_ports")
 dump("flag_path", "challenge.flag.path", "flag.path")
 dump("flag_mode", "challenge.flag.mode", "flag.mode")
 dump("probe_path", "challenge.verification.solve_probe.path", "verification.solve_probe.path")
+dump("name", "challenge.name", "name")
 dump("prov_status", "provenance.status", "challenge.provenance.status")
 dump("prov_verify", "provenance.verify", "challenge.provenance.verify")
 dump("check_path", "challenge.check.path", "check.path")
 PY
 }
 
-YAML_PORTS=""; YAML_FLAGPATH=""; YAML_PROBE=""; YAML_PROV_STATUS=""; YAML_PROV_VERIFY=""; YAML_CHECK_PATH=""; YAML_FLAG_MODE=""
+YAML_PORTS=""; YAML_FLAGPATH=""; YAML_PROBE=""; YAML_PROV_STATUS=""; YAML_PROV_VERIFY=""; YAML_CHECK_PATH=""; YAML_FLAG_MODE=""; YAML_NAME=""
 if [ -f challenge.yaml ] && [ "$HAVE_PYYAML" = 1 ]; then
   while IFS="$(printf '\t')" read -r k v; do
     case "$k" in
@@ -257,6 +271,7 @@ if [ -f challenge.yaml ] && [ "$HAVE_PYYAML" = 1 ]; then
       expose_ports) YAML_PORTS="$v";;
       flag_path) YAML_FLAGPATH="$v";;
       probe_path) YAML_PROBE="$v";;
+      name) YAML_NAME="$v";;
       prov_status) YAML_PROV_STATUS="$v";;
       prov_verify) YAML_PROV_VERIFY="$v";;
       check_path) YAML_CHECK_PATH="$v";;
@@ -396,6 +411,43 @@ assert_provenance() {
       fail "provenance.verify 是空的。填 passed / environment_failed / incomplete，空着等于没给结论"
       return
     fi
+    # 枚举值之外的值一律不认。"verified""ok"这类自造取值读起来像通过，实际平台和下一环都不认。
+    case "$YAML_PROV_STATUS" in
+      ""|original_adapter|independent_completion|incomplete) ;;
+      *) stage provenance loaded
+         fail "provenance.status 取值不合法：${YAML_PROV_STATUS}。只能取 original_adapter / independent_completion / incomplete"
+         return;;
+    esac
+    case "$YAML_PROV_VERIFY" in
+      ""|passed|environment_failed|incomplete) ;;
+      *) stage provenance loaded
+         fail "provenance.verify 取值不合法：${YAML_PROV_VERIFY}。只能取 passed / environment_failed / incomplete"
+         return;;
+    esac
+    # 声称保留了原始材料，就要能证明这些文件真的在。审查里出现过 original_material 列出不存在路径的情况。
+    PROV_MISSING_MATERIAL=()
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      case "$m" in
+        http://*|https://*|/*) continue;;   # 外部引用和绝对路径不核对
+      esac
+      [ -e "$m" ] && continue
+      # 只记下不存在的，留给下面统一报
+      PROV_MISSING_MATERIAL+=("$m")
+    done < <(awk '
+      /^[[:space:]]*original_material:/ { inb=1; v=$0; sub(/.*original_material:[[:space:]]*\[?/, "", v); gsub(/[][",]/, "", v); n=split(v, a, /[[:space:]]+/); for(i=1;i<=n;i++) if(a[i]!="") print a[i]; next }
+      inb && /^[[:space:]]*-/ { v=$0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); gsub(/["'\'']/, "", v); print v; next }
+      inb && $0 !~ /^[[:space:]]*$/ { inb=0 }
+    ' challenge.yaml)
+    if [ ${#PROV_MISSING_MATERIAL[@]} -gt 0 ]; then
+      stage provenance partial
+      partial "provenance.original_material 列了交付目录里不存在的文件：${PROV_MISSING_MATERIAL[*]}。要么补上材料，要么从列表里删掉——审查里出现过『声称原样保留、实际路径不存在』"
+    fi
+    # name 必须等于目录名，否则命名链断裂。
+    if [ -n "$YAML_NAME" ] && [ "$YAML_NAME" != "$(basename "$PROJECT")" ]; then
+      stage provenance partial
+      partial "challenge.yaml 的 name（${YAML_NAME}）和交付目录名（$(basename "$PROJECT")）不一致。目录名是主名，其余四处从它派生"
+    fi
     stage provenance passed
   fi
 }
@@ -404,6 +456,81 @@ echo "== 检查手册"
 assert_handbook
 echo "== 检查 provenance"
 assert_provenance
+
+# ---------- 手册雷同度（可选）：批量交付时最容易被骂"一坨一模一样的垃圾"
+# 只比对同批目录（父子两级）里的手册正文，算 3-gram Jaccard 相似度。
+# 只报警告，不改结论——同源题目（同一框架换参数）本来就会像，硬判 failed 会误伤。
+check_similarity() {
+  [ "$SIMILARITY" = 1 ] || return 0
+  echo "== 检查手册雷同度"
+  command -v python3 >/dev/null || { hint "没有 python3，跳过雷同度检查"; return 0; }
+  local sim_rc=0
+  python3 - "$PROJECT" "$(basename "$PROJECT")" "$SIMILARITY_REPORT" <<'PY' || sim_rc=$?
+import os, re, sys, json
+from collections import Counter
+
+proj, base, report = sys.argv[1], sys.argv[2], sys.argv[3]
+# 同批范围：题目目录的父目录下所有同级交付目录
+batch_root = os.path.dirname(os.path.abspath(proj))
+
+def body(path):
+    """取手册正文，去掉标题行、代码块、TODO 和注释，只留叙述文字。"""
+    try:
+        s = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return []
+    s = re.sub(r"```.*?```", " ", s, flags=re.S)          # 代码块不算雷同，题目命令本来就不同
+    s = re.sub(r"<!--.*?-->", " ", s, flags=re.S)
+    s = re.sub(r"^#+.*$", " ", s, flags=re.M)
+    s = re.sub(r"TODO\(人工填写\)", " ", s)
+    s = re.sub(r"[\s\W_]+", "", s)                        # 只留汉字字母数字，消掉格式差异
+    return [s[i:i+3] for i in range(len(s) - 2)]
+
+def jaccard(a, b):
+    A, B = set(a), set(b)
+    if not A or not B:
+        return 0.0
+    return len(A & B) / len(A | B)
+
+me = os.path.join(proj, "README", base + ".md")
+mine = body(me)
+if not mine:
+    print("   本题目录没有可比对的手册正文，跳过")
+    sys.exit(0)
+
+rows = []
+for name in sorted(os.listdir(batch_root)):
+    other = os.path.join(batch_root, name)
+    if other == os.path.abspath(proj) or not os.path.isdir(other):
+        continue
+    f = os.path.join(other, "README", name + ".md")
+    if not os.path.isfile(f):
+        continue
+    b = body(f)
+    if not b:
+        continue
+    rows.append({"other": name, "similarity": round(jaccard(mine, b), 3)})
+
+rows.sort(key=lambda r: -r["similarity"])
+# 阈值按实测定：AI-81-DVLAA 的 81 份手册里，套模板的那组 0.61~0.66，其余 <=0.34，
+# 中间是空的。0.6 落在断崖上方，既不漏掉整组套模板，也不会误伤正常同源题目。
+high = [r for r in rows if r["similarity"] >= 0.6]
+mid = [r for r in rows if 0.45 <= r["similarity"] < 0.6]
+print(f"   同批 {len(rows)} 份手册，>=0.6 的 {len(high)} 份，0.45~0.6 的 {len(mid)} 份")
+for r in high[:5]:
+    print(f"   [雷同] {r['similarity']:.2f}  {r['other']}")
+for r in mid[:3]:
+    print(f"   [接近] {r['similarity']:.2f}  {r['other']}")
+if report:
+    with open(report, "w", encoding="utf-8") as fh:
+        json.dump({"project": base, "rows": rows}, fh, ensure_ascii=False, indent=1)
+    print(f"   报告: {report}")
+sys.exit(2 if high else 0)
+PY
+  [ "$sim_rc" = 2 ] && partial "手册与同批其他题目高度雷同（>=0.6），逐题确认这不是套模板批量生成。用户明确说过「样式不能都一样」"
+  return 0
+}
+check_similarity
 
 # ---------- 交付目录检查：白名单 + 垃圾文件（递归）
 echo "== 检查交付目录"
@@ -475,10 +602,45 @@ if [ -z "$CHECK" ] && [ -f "${PROJECT}/check/check.sh" ]; then CHECK="./check/ch
 [ -n "$SOLVE" ] || { [ -f solve/solve.py ] && SOLVE="python3 solve/solve.py"; }
 # solve 引用了第三方库却没写安装命令时，换台干净机器就会失败。
 if [ -f solve/solve.py ] \
-   && grep -qE '^[[:space:]]*(import|from)[[:space:]]+(requests|numpy|PIL|z3|fpylll|sage|pwn|Crypto|gmpy2)\b' solve/solve.py \
+   && grep -qE '^[[:space:]]*(import|from)[[:space:]]+(requests|numpy|PIL|z3|fpylll|sage|pwn|Crypto|gmpy2|volatility3|pypykatz|cv2|scipy|pillow|PIL)\b' solve/solve.py \
    && ! grep -q 'pip install' solve/solve.py; then
   stage hygiene partial
   partial "solve/solve.py 引用了第三方库，但文件开头没有注释写明 pip install 命令，换台机器就跑不起来"
+fi
+# 更根本的问题：本机装了某个库，所以 verify passed，换到评测机就 ImportError。
+# 逐个验证 solve.py 里 import 的第三方模块在本机是否真的能导入；不能导入的直接判 failed。
+if [ -f solve/solve.py ] && command -v python3 >/dev/null 2>&1; then
+  MISSING_MODS=$(python3 -B - solve/solve.py <<'PY' 2>/dev/null
+import ast, importlib.util, sys
+STD = set(sys.stdlib_module_names) if hasattr(sys, "stdlib_module_names") else set()
+try:
+    tree = ast.parse(open(sys.argv[1], encoding="utf-8", errors="replace").read())
+except Exception:
+    sys.exit(0)
+mods = set()
+for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+        for a in node.names:
+            mods.add(a.name.split(".")[0])
+    elif isinstance(node, ast.ImportFrom):
+        if node.level == 0 and node.module:
+            mods.add(node.module.split(".")[0])
+missing = []
+for m in sorted(mods):
+    if m in STD or m.startswith("_"):
+        continue
+    try:
+        if importlib.util.find_spec(m) is None:
+            missing.append(m)
+    except (ImportError, ValueError):
+        missing.append(m)
+print(" ".join(missing))
+PY
+)
+  if [ -n "$MISSING_MODS" ]; then
+    stage solve failed
+    fail "solve/solve.py 依赖的模块在本机导不进来：${MISSING_MODS}。本机能跑不代表评测机有这些库——改成标准库实现，或在文件开头注释写明 pip install 命令并确认评测环境会装"
+  fi
 fi
 
 # 跑一次解题命令，带超时。结果写进 SOLVE_SRC，超时时置 SOLVE_TIMED_OUT=1。
@@ -777,6 +939,21 @@ else
   fi
 fi
 
+# ---------- 动态 Flag 的平台合同：镜像里必须有 /bin/bash
+# 平台用 exec_run("/bin/bash /changeflag.sh") 注入 Flag（LingXu base_app/tasks.py:56），
+# 不是 sh，也不是直接写文件。alpine / distroless / scratch 系镜像没有 /bin/bash，
+# 注入静默失败，Flag 停在占位值，平台只在前端提示"环境启动异常"。
+# 静态 Flag 题平台不写 Flag，不查这一项。
+if [ "$STATIC_FLAG" = 0 ] && [ "$NO_FLAG_CONTRACT" = 0 ]; then
+  if docker run --rm --platform "$PLATFORM" --entrypoint sh "$IMAGE" -c 'test -x /bin/bash' >/dev/null 2>&1; then
+    echo "   动态 Flag 依赖：/bin/bash 存在"
+    stage dynflag_bash passed
+  else
+    stage dynflag_bash failed
+    fail "镜像里没有 /bin/bash。平台用 /bin/bash 执行注入的 changeflag.sh，缺它 Flag 写不进去，选手拿到的永远是占位值。alpine/slim/distroless 系镜像要显式装 bash（apk add --no-cache bash）；确实只能静态 Flag 的题在 challenge.yaml 写 flag.mode: static"
+  fi
+fi
+
 # ---------- 端口探测
 FIRST_HOSTPORT=""; SOLVE_ENV=(); PORTS_OK=1
 for p in "${PORTS[@]+"${PORTS[@]}"}"; do
@@ -805,6 +982,28 @@ for p in "${PORTS[@]+"${PORTS[@]}"}"; do
 done
 [ ${#PORTS[@]} -gt 0 ] || partial "没有声明端口（challenge.yaml 的 expose_ports 或 Dockerfile 的 EXPOSE），跳过端口探测"
 [ "$PORTS_OK" = 1 ] && [ ${#PORTS[@]} -gt 0 ] && stage port passed
+
+# ---------- 就绪探针：端口监听 ≠ 服务可用
+# QEMU 题最典型：QEMU 一启动就占住转发端口，但 guest 还没起来，verify 判"已就绪"，
+# 然后 solve 的超时全被启动吃掉。用 --ready-cmd 给出"真的能用"的判据。
+if [ -n "$READY_CMD" ] && [ -n "$FIRST_HOSTPORT" ]; then
+  READY_CMD_EXPANDED=${READY_CMD//<PORT>/$FIRST_HOSTPORT}
+  echo "== 等待服务就绪：${READY_CMD_EXPANDED}（最多 ${READY_TIMEOUT} 秒）"
+  T0=$(date +%s); READY_OK=0
+  while :; do
+    running || break
+    if sh -c "$READY_CMD_EXPANDED" >/dev/null 2>&1; then READY_OK=1; break; fi
+    [ $(( $(date +%s) - T0 )) -ge "$READY_TIMEOUT" ] && break
+    sleep 2
+  done
+  if [ "$READY_OK" = 1 ]; then
+    echo "   服务就绪，用时 $(( $(date +%s) - T0 )) 秒"
+    stage ready passed
+  else
+    stage ready failed
+    fail "端口已经在监听，但 --ready-cmd 在 ${READY_TIMEOUT} 秒内没有返回 0。端口监听不等于服务可用（QEMU 题常见：QEMU 占着端口，guest 还没起完），确认就绪判据或加 --ready-timeout"
+  fi
+fi
 
 # ---------- RDG 判定：跑一遍判题脚本，初始环境必须"有漏洞"才算题目状态正确
 # 判据不是 Flag，而是"漏洞还在不在"，和普通题是两套逻辑。

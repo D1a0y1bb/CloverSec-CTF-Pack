@@ -190,7 +190,83 @@ jobs:
 
           echo "verify.sh container static checks OK"
 
-      # VERSION、CHANGELOG 和最近一个 tag 三处版本号必须对得上，否则发布时容易发出错的版本。
+      # 6.3.5 新增能力的回归：/bin/bash 依赖、QEMU 就绪探针、雷同度、provenance 枚举与命名链、
+      # solve.py 依赖检测、--port 校验。这些都不需要真起容器，靠静态路径就能验。
+      - name: verify.sh regression (6.3.5 additions)
+        run: |
+          set -euo pipefail
+          V=$PWD/src/CloverSec-CTF-Pack/scripts/verify.sh
+          W=$(mktemp -d)
+
+          # 手工拼一个最小附件题，后面的用例都基于它改
+          mk() {
+            local D="$1" name="$2"
+            mkdir -p "$D/附件" "$D/solve" "$D/README"
+            echo x > "$D/附件/a.bin"
+            printf 'print("flag{%s}")\n' "$3" > "$D/solve/solve.py"
+            {
+              echo "# $name"; echo
+              echo '## 1 题目设计部署信息'; echo
+              for s in 1.1 1.2 1.3 1.4; do echo "### $s 节"; echo 内容; echo; done
+              echo '### 1.5 旗帜信息'; echo '平台覆盖方式：无'; echo 'flag文件位置：/flag'; echo
+              echo '### 1.6 题目情况'; echo '发给选手一个二进制附件 a.bin'; echo
+              echo '### 1.7 题目设计'; echo 内容; echo
+              echo '### 1.8 解题步骤'; echo 内容
+            } > "$D/README/$name.md"
+          }
+
+          # a) solve.py 依赖导不进来 → failed
+          D="$W/a"; mk "$D" a dep_check
+          printf 'import definitely_not_installed_zzz\nprint("flag{a}")\n' > "$D/solve/solve.py"
+          bash "$V" "$D" > "$W/a.log" 2>&1 || true
+          grep -q '依赖的模块在本机导不进来' "$W/a.log"
+
+          # b) provenance.status 非法取值 → failed
+          D="$W/b"; mk "$D" b dep_ok
+          printf 'challenge:\n  name: b\n  expose_ports: ["80"]\nprovenance:\n  status: verified\n  verify: ok\n' > "$D/challenge.yaml"
+          bash "$V" "$D" > "$W/b.log" 2>&1 || true
+          grep -q 'provenance.status 取值不合法' "$W/b.log"
+
+          # c) name 与目录名不一致 → partial
+          D="$W/c"; mk "$D" c dep_ok
+          printf 'challenge:\n  name: wrong-name\n  expose_ports: ["80"]\nprovenance:\n  status: original_adapter\n  verify: passed\n' > "$D/challenge.yaml"
+          bash "$V" "$D" > "$W/c.log" 2>&1 || true
+          grep -q '和交付目录名' "$W/c.log"
+
+          # d) original_material 列了不存在的文件 → partial
+          D="$W/d"; mk "$D" d dep_ok
+          printf 'challenge:\n  name: d\n  expose_ports: ["80"]\nprovenance:\n  status: original_adapter\n  original_material: [missing.sql]\n  verify: passed\n' > "$D/challenge.yaml"
+          bash "$V" "$D" > "$W/d.log" 2>&1 || true
+          grep -q '不存在的文件' "$W/d.log"
+
+          # e) --ready-timeout 非数字 → 退出码 2
+          D="$W/e"; mk "$D" e dep_ok
+          if bash "$V" "$D" --ready-timeout xyz > "$W/e.log" 2>&1; then
+            echo "non-numeric --ready-timeout should exit 2"; cat "$W/e.log"; exit 1
+          fi
+          grep -q '需要整数秒' "$W/e.log"
+
+          # f) --similarity 对两份几乎相同的手册报警告（不改结论）
+          mkdir -p "$W/sim"
+          for n in A B; do
+            D="$W/sim/$n"; mk "$D" "$n" sim
+            cat >> "$D/README/$n.md" <<'TXT'
+
+          这道题的场景是一套企业内部的工单系统，选手需要在不具备管理员权限的前提下，
+          通过组合多个接口的越权行为，逐步拿到更高权限，最后读取敏感数据。
+          整个链路依赖对接口权限边界的理解，而不是单一的注入点。
+
+          题目的难点在于理解不同角色之间的数据可见范围，以及服务端是如何校验归属关系的。
+          选手需要先观察正常业务流的参数形态，再构造跨账户的请求，才能命中这个越权点。
+          TXT
+          done
+          bash "$V" "$W/sim/A" --similarity --similarity-report "$W/sim.json" > "$W/f.log" 2>&1 || true
+          grep -q '检查手册雷同度' "$W/f.log"
+          python3 -m json.tool "$W/sim.json" >/dev/null
+
+          echo "verify.sh 6.3.5 additions OK"
+
+                # VERSION、CHANGELOG 和最近一个 tag 三处版本号必须对得上，否则发布时容易发出错的版本。
       - name: Version consistency
         run: |
           set -euo pipefail

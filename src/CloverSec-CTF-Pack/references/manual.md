@@ -168,31 +168,26 @@ RDG 题的 ttyd 端口和账号必须有，选手要靠它进容器改代码。
 
 八项清单，逐项写全。命令要能直接复制执行。
 
-1. 目录说明：`src/`、`solve/`、`附件/`、`镜像/`、`check/` 各是什么，一句话一个。
-2. 构建命令，带 `--platform linux/amd64` 和镜像名。
-3. 交付 `镜像/` 时写出 tar 路径和 `docker load -i` 命令；没交付就明说用构建。
-4. 启动命令：**`docker run` 末尾必须显式带 `/start.sh`**。平台就是用 `/start.sh` 覆盖 `CMD` 启动容器的，手册里的命令要跟平台一致。带 `-d --name`、完整端口映射、需要的环境变量。
-5. 访问地址：Web、ttyd、后台入口分别列出来。
-6. 平台写入 Flag 的命令，和 1.5 一致。
-7. 停止和清理容器的命令。
-8. 端口按现场环境调整时，说明 check 和手册里的命令要同步改哪里。
+**这一节最容易漏三样：`--name`、`docker load -i`、清理命令。** 下面给一份完整模板，照填空题一样替换值就行。
 
 ````markdown
 ### 1.7 部署方式
 
-在本目录执行：
+`src/` 是题目源码和静态资源；`solve/` 是本地验证脚本，不进镜像；`镜像/` 是导出的镜像 tar；`附件/` 是发给选手的文件。
+
+在本目录构建：
 
 ```bash
 docker buildx build --platform linux/amd64 -t afterimage:latest --load .
 ```
 
-交付了镜像 tar 时改用：
+交付了镜像 tar 时改用（tar 路径和 1.5 的镜像名一致）：
 
 ```bash
 docker load -i 镜像/afterimage.tar
 ```
 
-启动容器，`/start.sh` 是平台入口，必须显式带上：
+启动容器。`/start.sh` 是平台入口，末尾必须显式带上；`--name` 必须和后面清理命令里的名字一致：
 
 ```bash
 docker run -d --name afterimage \
@@ -205,7 +200,7 @@ docker run -d --name afterimage \
 Web：http://127.0.0.1:8080/
 后台上传入口：http://127.0.0.1:8080/admin/upload.php
 
-平台启动后写入 Flag：
+平台启动后写入 Flag（平台实际用的是后台配置的 `flag_script`，这里给等价的本地模拟命令）：
 
 ```bash
 docker exec afterimage sh -c 'printf "%s\n" "$1" > "$2"' sh 'flag{example}' /flag
@@ -216,9 +211,46 @@ docker exec afterimage sh -c 'printf "%s\n" "$1" > "$2"' sh 'flag{example}' /fla
 ```bash
 docker rm -f afterimage
 ```
+
+端口按现场环境调整时，以下四处要同步改：`Dockerfile` 的 `EXPOSE`、`challenge.yaml` 的 `expose_ports`、本手册 1.6 和 1.7 的端口、`solve/solve.py` 的默认 `PORT`。
 ````
 
 旧平台用 `changeflag.sh` 的题，把 `-e FLAG='...'` 的启动方式也写进来。
+
+### Web / AI 类题的入口页
+
+**选手打开的第一屏必须是能说明这道题是什么的页面。** 不能是 `NOT-FOUND` 纯文本、不能是空白 `index.html`、不能是 `{"error": "not found"}`。
+
+- 官方有页面就用官方的截图/原页面。
+- 官方没有就照题目场景做一个：业务系统的登录页、客服对话窗口、文件上传台、监控面板。
+- 同一批题目**不要用同一个模板套**。做完一道看一眼，和上一道长得一样就重做。
+
+用户对这件事的原话是「每个题目的页面最好是官方的那个，最差也要自己好好的整哈，不能糊弄我哈」「每个题目的样式不能都几把一模一样」。
+
+### 1.5 里的 flag_script
+
+动态 Flag 题的手册 1.5 要贴出**可以直接复制到平台后台的 `flag_script` 原文**，出题人不用自己写：
+
+````markdown
+### 1.5 旗帜信息
+
+原始静态flag：flag{placeholder}
+
+平台覆盖方式：在平台后台题目配置的 flag_script 里填下面这段
+
+```bash
+#!/bin/bash
+set -uo pipefail
+printf '%s\n' "$new_flag" > /flag
+chmod 444 /flag
+```
+
+flag文件位置：/flag
+
+读取时机：每次请求读
+````
+
+`$new_flag` 必须保留，平台会把它替换成本实例的动态值。模板说明见 [platform.md](platform.md)。
 
 ---
 

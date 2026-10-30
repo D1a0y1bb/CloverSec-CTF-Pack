@@ -223,7 +223,17 @@ An `incomplete` challenge is never written up as "verified". An `independent_com
 
 ## Flag contract
 
-Once the container is up, the platform writes the round's dynamic flag into the file named by `flag.path` in `challenge.yaml`. That has to be the file the program actually reads — open the source and find the line that reads the flag before filling the field in:
+### Dynamic flags need `/bin/bash`
+
+The platform writes a dynamic flag by **running an injected script with `/bin/bash`**: the author fills in a `flag_script` in the admin panel, the platform drops it into the container as `/changeflag.sh` and runs `/bin/bash /changeflag.sh`, retrying up to 30 times.
+
+**If the image has no `/bin/bash`, the flag is never written**, and it fails silently — players get the placeholder value and the platform only reports "environment failed to start". Alpine-based images need an explicit `RUN apk add --no-cache bash`; distroless and scratch images can only use a static flag.
+
+`verify.sh` probes for this after the build and reports `failed` when it is missing.
+
+### flag.path
+
+This has to be the file the program actually reads — open the source and find the line that reads the flag before filling the field in:
 
 | Category | Usual path |
 |---|---|

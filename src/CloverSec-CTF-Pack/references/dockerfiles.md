@@ -5,6 +5,7 @@
 ## 目录
 
 - 镜像版本固定
+- alpine 系必须装 bash
 - Python（Flask / gunicorn）
 - Node
 - PHP（cli 内置服务器）
@@ -13,6 +14,26 @@
 - 纯静态
 - Pwn（socat / xinetd）
 - 国内构建与 CRLF
+
+---
+
+## alpine 系必须装 bash
+
+**动态 Flag 题的最低要求：镜像里必须有 `/bin/bash`。** 平台用 `/bin/bash /changeflag.sh` 注入 Flag，缺 bash 直接失败，Flag 停在占位值。
+
+| 基础镜像 | 处理 |
+|---|---|
+| `python:3.11-alpine` / `node:20-alpine` / `php:8-alpine` | 加 `RUN apk add --no-cache bash` |
+| `python:3.11-slim` / `debian` / `ubuntu` | 自带，不用加 |
+| distroless / scratch | 装不了，只能静态 Flag（`flag.mode: static`） |
+
+```dockerfile
+FROM python:3.11-alpine
+# 平台用 /bin/bash 执行注入的 changeflag.sh，alpine 默认没有 bash，必须装。
+RUN apk add --no-cache bash
+```
+
+`verify.sh` 会探测这一项，没有直接判 `failed`。
 
 ---
 
@@ -110,6 +131,9 @@ exec gunicorn -w 1 -b 0.0.0.0:5000 app:app
 
 ```dockerfile
 FROM node:20-alpine
+
+# 平台用 /bin/bash 执行注入的 changeflag.sh，alpine 默认没有 bash，必须装。
+RUN apk add --no-cache bash
 
 WORKDIR /app
 COPY src/ /app/
@@ -236,6 +260,8 @@ CMD ["/start.sh"]
 
 ```dockerfile
 FROM nginx:alpine
+# 平台用 /bin/bash 执行注入的 changeflag.sh，alpine 默认没有 bash，必须装。
+RUN apk add --no-cache bash
 COPY src/ /usr/share/nginx/html/
 COPY start.sh /start.sh
 COPY flag /flag

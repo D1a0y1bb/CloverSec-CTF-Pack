@@ -36,6 +36,20 @@ metadata:
 
 常见的是上一版为了"能在本地跑起来"做过替换：nginx+php-fpm 换成 `php:*-apache`、PHP 5.6 升到 7.x、MySQL 服务层删掉、多步链路压成一条。
 
+**上一版是"简化版"时，体检必须逐题产出降级点清单，不许一句话带过。** 用户对这批题的原话是「这几个题也是之前做过的简化版哈…一定要回复原本的难度」。
+
+体检时逐题回答这五个问题，答不上来的去读源码，不要猜：
+
+1. 原始链路是几步？现在几步？少的那几步是什么？
+2. 原始防护（WAF、黑名单、`disable_functions`、权限校验）还在不在？
+3. 有没有被替换成等价但更容易的东西？比如 SROP 换成 trivial ret2win、竞态换成同步、需要反推的数据结构换成自编的。
+4. 有没有后门式简化？比如把 `/flag` 软链接直接放进 Web 根目录、把管理后台删掉、把鉴权改成默认放行。
+5. 服务拓扑和运行时版本对不对得上原题？
+
+五个问题里任何一个答"变了"，都在 `provenance.simplified` 里写清变了什么、为什么不能等价恢复。写不出来的就是没恢复到位，要停下来问用户。
+
+真实案例：上一版把 Phar 题的 `file_put_contents` 死亡绕过（`<?php exit();` 前缀）整段跳过、把 SROP 换成写死 `WIN = 0x401216` 的 ret2win、把 `1 -> /flag` 软链接放在 web 根目录导致一个 `GET /1` 就白给。这三类都不是"跑起来了"，是"题没了"。
+
 ### 什么算降级
 
 下面每一条都改变题目难度。做了任何一条，都要先停下来问用户，不许自己决定：
@@ -134,6 +148,24 @@ Mobile  OSINT  OpposeAI  PPC  Pentest  Pwn  Quantum  RDG  Reverse  Web
 
 中文题名保留中文（`Web-残影`），英文题名统一小写连字符（`Pwn-hard-fmt`）。题名里的 emoji 和标点去掉。
 
+**题名简洁可读优先，不要文艺化。** 起名前想一下运维和选手怎么念：`Web-erp1` 比 `Web-华夏ERP-免检通道` 好，`Web-erp2` 比 `Web-华夏ERP-影子管理员` 好。有现成的官方题名直接用官方题名，不要自己创作。用户明确说过「现在这个好难听啊」。
+
+### 主名派生一切
+
+**目录名是主名，其余四处全部从它派生，不许各写各的。**
+
+| 位置 | 规则 | 例子 |
+|---|---|---|
+| 目录名 | 主名 | `Web-FastDestruct` |
+| `challenge.yaml` 的 `name` | 等于主名 | `Web-FastDestruct` |
+| 手册文件名 | `README/<主名>.md` | `README/Web-FastDestruct.md` |
+| 镜像 tag | 主名转小写连字符 | `web-fastdestruct:latest` |
+| 镜像 tar | `<主名>.tar` | `镜像/Web-FastDestruct.tar` |
+
+这是审计里最高频的问题：目录叫 `Web-FastDestruct`、tar 叫 `phar-fastdestruct.tar`、`challenge.yaml` 里又是第三个名字。平台按 `<题目名>.tar` 找镜像时找不到，一套交付变成两套命名。
+
+镜像 tag 只能用 `[a-z0-9._-]`，所以中文题名要转成拼音或英文短名；转出来的名字写进 `challenge.yaml` 的 `metadata.image_tag`，手册 1.7 用这个 tag。
+
 ## 容器题还是附件题
 
 按下面四条判，**从上往下第一条命中的就是答案**：
@@ -218,6 +250,10 @@ Crypto-星屑密匣/
 - 分类判据是**有没有 `Dockerfile`**，不是题目类型名。
 - 只有一类时，另一类目录不建。
 - **不要在交付根之外散落题目目录。** 迁移或重组时，先把新位置写全，再删旧位置；不要留"两处各一份"。工作目录根上只留交付根和与本次无关的既有目录。
+
+  真实事故：用户三轮指令落点不同，Agent 每轮都照做但没清上一轮的产物，最后 62 道题在工作区和新交付目录各有一份，工作区被占满。用户原话「怎么工作区目录下还有一大堆题目啊？怎么搞的」。
+
+  迁移的正确顺序是：先 `cp -a` 到新位置 → 逐题核对（至少比文件数和关键文件 md5） → 确认新位置完整 → 再删旧位置 → 删完再核对一次。**不要先删后拷，也不要边拷边删。** 删之前如果拿不准旧位置的某些东西是不是本次的，问用户，别自己判断。
 - 交付根 `README.md` 是索引，**不是**题目手册；题目手册始终在各自的 `README/` 里。
 
 ### 交付目录白名单
@@ -282,7 +318,29 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录> --report "$(mktemp -d)/
 
 1. **出题人材料**：赛事归档、出题人交付包、旧题目录里的设计文档、官方题解、题目源码注释。直接搬运整理，不留 TODO。
 2. **外部 writeup / 战队 WP**：只能当线索。**写进手册之前必须在本次交付的环境里复跑核对**——注入点、参数形态、触发顺序、工具装法都可能和本题不一致。搬运和编造之间还有这一档，别把二手记录当出题人原话。
-3. **确实没有来源**：在该节正文写一行 `TODO(人工填写)`，并在交付说明里点名哪几节空着。不要写进 `<!-- -->` 注释里，那样渲染出来看不见，空着的节没人发现。
+3. **本次交付自己实测出来的链路**：材料里没有设计文档，但你按 `solve/solve.py` 真打通了，那么你自己验证过的注入点、payload、触发顺序就是可靠来源，可以写进 1.8/1.9。这不算编造，因为它是实测的；但只写你实际跑通过的部分，没验证过的推论不要写。
+4. **确实没有来源**：在该节正文写一行 `TODO(人工填写)`，并在交付说明里点名哪几节空着。不要写进 `<!-- -->` 注释里，那样渲染出来看不见，空着的节没人发现。
+
+### 不许套模板批量生成
+
+批量做几十道题时，最容易出的问题不是每道题做错，而是**所有题长得一模一样**：同一套手册结构、同一套句式、同一套页面，只把题目名和参数替换掉。
+
+用户对这件事的原话是「我最讨厌你批量弄了一坨垃圾」「每个题目的样式不能都几把一模一样」。
+
+具体要求：
+
+- **手册正文不能是模板填空。** 1.2 写这道题独有的氛围，1.4 写这道题独有的知识点，1.8 写这道题独有的设计动机。读完两题的手册，应该能看出它们是两道不同的题。
+- **1.9 的步骤必须是这道题真实的攻击顺序**，不是 `执行 tool.a → 执行 tool.b → 拿 Flag` 这种通用三段式。
+- **Web / AI 类容器题的入口页必须是能说明这道题是什么的页面**，不能是 `NOT-FOUND` 纯文本、不能是空白 `index.html`。有官方页面就用官方的，没有就照题目场景做一个像样的。
+- **同一批题目的页面样式要有差异**，同一个框架、同一套 UI 的所有题放在一起，本身就是"批量糊弄"的证据。
+
+`verify.sh --similarity` 会对同批目录的手册做雷同度检查（只报警告，不改结论）。0.6 以上大概率是套模板，逐题确认。
+
+### 照手册手工复走一遍
+
+`verify.sh` 的 `passed` 只证明容器生命周期和解题脚本对，**证明不了手册能不能用**。手册里的命令写错一个参数、字段名写错、路径不对，`verify.sh` 全绿但选手照着做会卡住。
+
+交付前必须做这一步：**不跑 `solve.py`，严格照手册 1.9 的命令逐条手工敲一遍**，从选手视角走完全程。这一步经常一次查出好几处命令错误，而前面所有 `verify.sh` 都是 passed。
 
 **不许编。** 编出来的东西比空着更糟：「考察 Web 请求分析、服务端输入处理」这类句子读起来像内容，实际什么也没说，还会把空位掩盖掉，让人以为手册写完了。同样不要写"具体漏洞点以 `src/` 中的原始实现为准"这种把问题退回来的句子，不要写"复现完成判据"这种凑字数的过程说明。
 
@@ -356,10 +414,30 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 
 - 题目目录里有 `solve/solve.py` 时自动运行，输出里必须出现刚写入的随机测试 Flag；然后换一个 Flag 再解一次。解题脚本不是 Python 时用 `--solve '<命令>'` 指定。
 - 静态 Flag 题和附件题没有测试 Flag，用 `--expect-flag '<手册 1.5 里的值>'` 断言。RDG 题自动走 check 判定。
+- QEMU 题加 `--ready-cmd`：端口监听不等于 guest 起来了，不加会把 solve 的时间预算全花在启动上。
+- 批量交付时加 `--similarity`：检查同批手册有没有套模板。
 - `failed`：按输出里的原因和日志改，再跑，直到 `passed`。排查时加 `--keep` 保留容器，用 `docker logs` 看输出。
 - `partial`：在交付说明里写清是哪一项。
 - `environment_failed`：只说明本机跑不动，换原生 amd64 重跑，不能说成通过。
 - 没跑 verify.sh 的题不要说成已验证；没有 solve.py 时只能说明容器能跑，不能说明题目可解。
+
+### 不许为了让 verify 变绿去改产物
+
+`partial` 和 `failed` 是**结论**，不是需要消灭的状态。看到它们，先判断是产物有问题还是验证器没有覆盖到，再决定改哪边。
+
+**明确禁止的操作**：为了让 `verify.sh` 变绿去删 Dockerfile 的 apt 层、把 `ENTRYPOINT` 改成 `CMD`、把 `EXPOSE` 改成验证器能读到的端口、把题目代码改成能跑的更简单版本。这些改动不修题目，只改指标，交付出去的东西反而更差。
+
+如果验证器和真实平台合同冲突，说明白冲突在哪，停下来问。不要自己挑一边。
+
+## 效率纪律
+
+批量交付时最常见的失败不是做错，是**大量时间花在等**。用户的评价原话是「我要求你 10 分钟内必须结束」「别他妈的用脚本给我 timeout_ms 几十分钟去等」。
+
+1. **先用最便宜的方式确认一件事**。想知道端口通不通，`curl` 一次；想知道 Flag 写没写进去，`docker exec cat` 一次。不要为了一个单点事实写几百行脚本、起一堆容器跑十分钟。
+2. **单题先手测，通过了再批量**。不要一上来全量跑。
+3. **确实要长跑的先说清楚**：预计多久、卡在哪、跑完会得到什么。不要扔一个后台 job 然后闷头等几十分钟。
+4. **不要用"全量重跑"来回答"还有没有问题"**。逐题对账比全量重跑快得多，而且能定位。
+5. **不要轮询**。后台任务结束会通知，盯着看只会耗上下文。
 
 ## 交付前自检清单
 
@@ -369,9 +447,9 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 [ ] 1. 目录名：<题目类型>-<题目名称>，类型在 20 类里，无 emoji、无标点
 [ ] 2. 多题交付：容器题/ 与 附件题/ 分开，根 README.md 索引逐题写状态
 [ ] 3. 白名单：ls -A 逐条对照，内部工作文件、报告、日志、构建产物一个不留
-[ ] 4. 垃圾扫描：find <交付根> \( -name .DS_Store -o -name __pycache__ -o -name '*.pyc' \) -print 后删除
+[ ] 4. 垃圾扫描：find <交付根> \( -name .DS_Store -o -name __pycache__ -o -name '*.pyc' \) -print 后删除（用下面的一键命令，别手写）
 [ ] 5. 手册文件名 = 交付目录名；章节骨架齐全；<!-- 为 0；TODO 不为 0 时在交付说明里点名哪几节
-[ ] 6. 手册 1.9 的每条命令和 payload 用 solve.py 复跑通过
+[ ] 6. 手册 1.9 的每条命令和 payload 用 solve.py 复跑通过；再照手册手工走一遍
 [ ] 7. 手册里出现的相对路径逐个 test -e（src/...、附件/...、跨题目录）
 [ ] 8. 附件清单与 README 1.6 写的文件名集合一致（差集为空）
 [ ] 9. challenge.yaml 能被 yaml.safe_load 解析；provenance 的 status/verify 都填了
@@ -379,11 +457,24 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 [ ] 11. Dockerfile：无 COPY .、无 COPY --chmod、无 --platform=$BUILDPLATFORM；FROM 版本与原题一致
 [ ] 12. start.sh：LF、有 shebang、exec 主进程（多服务后台起主服务后 wait）、没有 GZCTF_FLAG/DASFLAG 之类的别的平台合同
 [ ] 13. 端口三处一致：Dockerfile EXPOSE、challenge.yaml expose_ports、手册 1.6/1.7
-[ ] 14. verify.sh 跑到 passed（原始架构上）；跑不动的标 environment_failed 并说明卡在哪
-[ ] 15. 交付说明里逐题列出：难度基线 vs 实际交付、provenance.status、verify 结论、还缺什么
+[ ] 14. 动态 Flag 题：镜像里有 /bin/bash；flag_script 写进手册 1.5
+[ ] 15. verify.sh 跑到 passed（原始架构上）；跑不动的标 environment_failed 并说明卡在哪
+[ ] 16. 非预期解法：默认口令、注册用户、直接访问、报错泄露，逐项试过并处理
+[ ] 17. 五处命名一致：目录名 = challenge.yaml name = README 文件名 = 镜像 tag = tar 名
+[ ] 18. 交付说明里逐题列出：难度基线 vs 实际交付、provenance.status、verify 结论、还缺什么
 ```
 
-`verify.sh` 覆盖第 3、4 条全部，第 12 条查 LF、shebang、`exec`/`wait` 和别的平台合同，第 14 条查本机能否跑到 `passed`；第 5 条只查文件名、骨架、事实字段和 TODO，不查判断部分写了什么；第 9 条只在装了 PyYAML 时查语法；第 10、11、13 条靠人读，脚本不看。脚本查不出来的项，别用"verify passed"替代。
+`verify.sh` 覆盖第 3、4 条全部，第 12 条查 LF、shebang、`exec`/`wait` 和别的平台合同，第 14 条查 `/bin/bash`，第 15 条查本机能否跑到 `passed`；第 5 条只查文件名、骨架、事实字段和 TODO，不查判断部分写了什么；第 9 条查 YAML 语法、provenance 取值枚举、`name` 与目录名一致、`original_material` 路径存在；第 6 条只做到"能复跑"，照手册手工走一遍要人做；第 10、11、13、16、17 条靠人读。脚本查不出来的项，别用"verify passed"替代。
+
+### 垃圾清理一键命令
+
+`.DS_Store` 是 macOS Finder 自动生成的，**清完打开一次目录又会出现**。每次都手写 `find` 容易漏，也可能被 shell 吞掉参数。用这条：
+
+```bash
+find <交付根> \( -name .DS_Store -o -name __pycache__ -o -name '*.pyc' \) -print -delete
+```
+
+**只读检查时不要生成 `__pycache__`**：用 `python3 -B`，或者 `PYTHONDONTWRITEBYTECODE=1 python3`。直接 `python3 -c 'import solve'` 会在 `solve/` 下留一个 `__pycache__/`，交付目录就脏了。`python3 -m py_compile` 同理。
 
 ## 环境与验证
 
@@ -392,6 +483,14 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 1. 本机用 `docker buildx build --platform linux/amd64 --load` 能产出 amd64 镜像。
 2. **"和原生构建完全一致"不是保证。** 构建期的 `RUN` 会在模拟层真的执行，依赖 CPU 特性、时钟或模拟层不支持的 syscall 时会失败或行为不同。要长期存档的题按 [references/dockerfiles.md](references/dockerfiles.md) 锁 digest 和 apt 源。
 3. **能否判定交付合格，必须在原生 amd64 上跑。** 本机模拟跑不出 `passed` 时，标 `environment_failed` 并告诉用户，不要用模拟结果冒充通过。
+
+### Pwn / 内核题必须原生跑一次
+
+Pwn、Linux 内核、依赖堆布局（libc 段地址、heap base、JIT 布局）的题，**本机模拟通过不等于原生通过**。
+
+典型事故：`solve.py` 里写了 `if libc_base < 0x7F0000000000: raise`，这个假设在容器模拟下成立（libc 映射在 `0x7f...` 段），在原生 Linux 上不成立，solve 直接报"libc 泄漏异常"。模拟环境全绿，上线不可解。
+
+规则：这类题的 `solve.py` 必须在原生 amd64 上跑到 `passed`，才能写 `provenance.verify: passed`。本机只作快速迭代，不作结论。
 
 ### 环境归因纪律
 
@@ -415,17 +514,56 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 ## 平台怎么跑题目
 
 1. 用 Dockerfile 构建 `linux/amd64` 镜像。
-2. `docker run -d -p <映射> <镜像> /start.sh` 启动。`/start.sh` 会覆盖 `CMD`；不要设置会吞掉它的 `ENTRYPOINT`。
-3. 容器起来后执行：
-
-   ```bash
-   docker exec <容器> sh -c 'printf "%s\n" "$1" > "$2"' sh '<本场 Flag>' '<flag.path>'
-   ```
-
-   镜像里必须有 `sh`，`flag.path` 所在目录必须存在。
-4. 选手访问映射出来的端口。服务要监听 `0.0.0.0`，只监听 `127.0.0.1` 的端口从外面访问不到。
+2. 平台以 `/start.sh` 作为命令起容器（`containers.run(..., command='/start.sh')`）。`/start.sh` 必须真实存在并前台运行主服务；不要设置会吞掉它的 `ENTRYPOINT`。
+3. 选手访问映射出来的端口。服务要监听 `0.0.0.0`，只监听 `127.0.0.1` 的端口从外面访问不到。
+4. 动态 Flag 由平台注入，**不是** `docker exec printf > 文件`。完整机制见下一节。
 
 用环境变量传 Flag 的平台、静态 Flag 题、镜像 tar 的导出格式等差异见 [references/platform.md](references/platform.md)。
+
+## 动态 Flag 必须装 bash
+
+**平台的动态 Flag 是用 `/bin/bash` 执行一段注入脚本的。镜像里没有 `/bin/bash`，Flag 就写不进去，而且失败是静默的。**
+
+平台从凌虚源码里还原出来的真实流程：
+
+```text
+出题人在平台后台填 flag_script（文本框，必须含 $new_flag，平台保存时会校验）
+  ↓ 选手开环境，containers.run(command='/start.sh')
+  ↓ 平台生成 new_flag = flag{md5(静态flag + 用户id + 容器short_id)}
+  ↓ 脚本里 $new_flag 被替换成本实例的值
+  ↓ put_archive 把脚本塞进容器，叫 /changeflag.sh
+  ↓ exec: chmod +x /changeflag.sh
+  ↓ exec: /bin/bash /changeflag.sh     ← 就是这一步，缺 bash 直接失败
+  ↓ exec: rm -rf /changeflag.sh
+```
+
+重试判据只有 `Can't connect to local MySQL server through socket` 一句，缺 bash 不在里面，**第一次失败就放弃**。选手拿到的是占位值，平台只在前端提示"环境启动异常"。
+
+### 规则
+
+| 基础镜像 | 要不要装 bash |
+|---|---|
+| `debian` / `ubuntu` / `python:*-slim`（bookworm 系） | 自带，不用装 |
+| `python:*-alpine` / `node:*-alpine` / `php:*-alpine` | **必须** `RUN apk add --no-cache bash` |
+| distroless / scratch | 装不了，只能用静态 Flag（`flag.mode: static`） |
+
+`verify.sh` 构建后会探测镜像里有没有 `/bin/bash`，缺了直接判 `failed`。
+
+### flag_script 标准模板
+
+这段是复制到**平台后台题目配置的文本框**里的，不随交付物走。`$new_flag` 必须保留，平台会替换。
+
+```bash
+#!/bin/bash
+set -uo pipefail
+# 平台注入时已把 $new_flag 替换成本实例的动态值。
+printf '%s\n' "$new_flag" > /flag
+chmod 444 /flag
+```
+
+目标路径不是 `/flag` 时改最后两行；要同步数据库、配置文件、QEMU rootfs 时在 `printf` 后面接你的命令。**不要在这个脚本里做耗时操作**——平台会重试，但每次失败都让环境启动变慢。
+
+手册 1.5 要把这段脚本原文写进去，出题人直接复制。完整机制、排障顺序、多目标范例见 [references/platform.md](references/platform.md)。
 
 ## Flag 合同
 
@@ -440,9 +578,27 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 
 **这张表是"常见值"，不是"默认值"。** 迁移旧平台题（GZCTF、CTFd 等）时，`flag.path` 必须逐题判定，不许按题型或按批次一刀切填 `/flag`。用户选了一个全局方案，也要逐题覆盖。
 
-- Dockerfile 用 `COPY flag <flag.path>` 放占位文件。
+### Flag 的内容形态
+
+**`solve.py` 里不许假设 Flag 的长度和字符集。** 真实踩过的三个坑：
+
+1. **只认 `flag{` 前缀**：平台写入的不是这个格式时，解题脚本直接返回失败。
+2. **长度按固定值取整**：39 字符的 Flag 因为 `//` 向下取整改成 38 字符，少了最后一位，选手提交不对。
+3. **XML / HTML 转义没还原**：Flag 里的 `&` 被读成 `&amp;`，`flag{amp&and}` 变成 `flag{amp&amp;and}`。
+
+规则：
+
+- 动态 Flag 的形态是 `flag{md5 十六进制 32 位}`，总长 38 字符，但**这只是当前实现**，不要写死。
+- 静态 Flag 的形态由出题人定，`solve.py` 更不能假设。
+- 从 HTTP 响应、数据库、XML、配置文件里取 Flag 时，取到之后做一次反转义（`&amp;` → `&`、`&lt;` → `<`）再比对。
+- **不要用 `[:39]`、`//` 这类按固定长度切的写法**，用正则取完整的一段。
+- `verify.sh` 每次写的测试 Flag 是 `flag{verify_<12位hex>}`，形态固定。它测不出你对长度和字符集的假设——**所以这些假设要自己审一遍**。
+
+### 动态 Flag 题
+
+- Dockerfile 用 `COPY flag <flag.path>` 放一个占位文件。**动态 Flag 题里占位值写什么都行**（`flag{placeholder}` 即可），平台会覆盖它，不需要纠结这个值像不像真 Flag。
 - 程序在每次请求时读取 Flag 文件。启动时读一次存进变量（Python 模块级变量、Java `static` 块、fork 前 import 的模块），平台换了 Flag 也不会生效。`verify.sh` 会写第二个 Flag 再解一次来抓这个问题。
-- 配置里读 Flag 的题（启动时把 `/flag` 载进 config），平台换 Flag 后要同步并重启应用。这种题在 start.sh 里加一段同步循环，写法见 [references/special.md](references/special.md)。
+- **平台写入晚于服务启动**，实测多数 1~4 秒、偶发 61 秒。要在启动时把 Flag 搬进别处（配置文件、数据库、QEMU guest）的题，必须等"平台真的写完了"再搬，判据和模板见 [references/special.md](references/special.md) 的「Flag 同步等待」。
 - **同步循环必须能证明写成功。** 不要写 `cp /flag /target 2>/dev/null || true` 把错误吞掉，也不要把目标文件设成只读——失败会被静默吞掉，选手拿到的永远是占位值。
 - 旧题常见的适配方式：程序读的不是 `/flag`，用软链接或包装文件把两者接起来。优先改程序或配置直接读 `flag.path`；确实要接的时候，在 Dockerfile 里建链接并在手册里写明，不要留一个只有作者知道路径的包装脚本。
 
@@ -450,9 +606,12 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 
 有些赛事的题目不发动态 Flag：平台不写文件，只比对选手提交的字符串。这类题在 `challenge.yaml` 里写 `flag.mode: static`，手册 1.5 写「平台覆盖方式：无，本题为静态 Flag」。
 
+- **静态 Flag 题的占位值必须是明显占位**，不能是真实形态的值（`flag{a6c4e70fdc9247...}` 这种）。镜像会发到选手手里，真值会泄漏。
+- **手册 1.5 必须写明这个值是从哪考证来的**（哪份题解、哪个文件、哪次比赛）。考证不出来就写 `TODO(人工填写)`，不要自己编一个。
 - 镜像里放的静态 Flag 就是完整的那一个，`chmod 444`。
 - 多小问拼成一个完整 Flag 时，按小问顺序取各段的 `{}` 内容、用下划线连接，外层只留一层 `flag{}`。多出来的小问占位文件放在 `src/flags/` 下再 `COPY`，不要直接在题目录根上放 `flag1`、`flag2`（白名单只认 `flag`）。
 - `flag.path` 照样填程序实际读的路径。`verify.sh` 不写 Flag，要求解题输出里出现镜像里 `flag.path` 的那个值（或 `--expect-flag` 给的值）。
+- **附件题和静态 Flag 题验证时必须给 `--expect-flag`**，否则 solve 输出里只要有个 `flag{...}` 形态的字符串就算通过，OCR 少认一位、下划线认成数字都查不出来。
 
 ## 难度等价记录
 

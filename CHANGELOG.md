@@ -2,6 +2,64 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.5 - 2026-10-30
+
+基于 30 个会话、205 个子 Agent 会话、两个交付产物目录（AI-81-DVLAA 81 题、EXP-23-CVEnew 8 题）的复盘，以及凌虚平台源码核对。
+
+### 新增
+
+- **动态 Flag 的真实机制**（`references/platform.md`）：从凌虚源码还原完整链路——平台把出题人配的 `flag_script` 打成 tar、`put_archive` 成 `/changeflag.sh`、`chmod +x`、`/bin/bash /changeflag.sh`、最多重试 30 次、`rm -rf`。`$new_flag` 是 `flag{md5(静态flag+用户id+容器short_id)}`，不是随机值。
+- **硬规则：动态 Flag 题镜像必须有 `/bin/bash`**。alpine/slim/distroless 系镜像缺 bash 时平台注入静默失败，Flag 停在占位值，平台只提示"环境启动异常"。`verify.sh` 新增 `dynflag_bash` 阶段探测。
+- **`flag_script` 标准模板**：可直接复制到平台后台，`$new_flag` 必须保留。手册 1.5 要求贴出这段原文。
+- **Flag 同步等待模板**（`references/special.md`）：三条件判据（内容≠静态值、符合 `flag{.+}`、0.3 秒复核不变），超时 120 秒不阻塞启动。替代原来只比 `cksum` 的写法——实测平台写入延迟 1~4 秒、偶发 61 秒。
+- **`verify.sh --ready-cmd` / `--ready-timeout`**：QEMU 题端口一开就判"已就绪"会吃掉 solve 的时间预算，现在可以指定真正的就绪判据。
+- **`verify.sh --similarity` / `--similarity-report`**：同批手册雷同度检查，默认关闭。阈值 0.6，取自 AI-81-DVLAA 实测断崖（套模板组 0.61~0.66，其余 ≤0.34）。只报警告不改结论。
+- **`verify.sh` 检查 `solve.py` 的第三方依赖**：用 AST 解析 import，逐个 `find_spec`，导不进来的直接 `failed`。本机装了某个库导致 verify 通过、评测机 ImportError 的问题从此能检出。
+- **`verify.sh` 检查 provenance 内容**：status/verify 取值枚举、`name` 与目录名一致、`original_material` 列的文件是否真的存在。
+- **SKILL.md 新增「不许套模板批量生成」**：手册正文不能是模板填空、1.9 必须是真实攻击顺序、Web 入口页不能是 `NOT-FOUND`、同批页面样式要有差异。
+- **SKILL.md 新增「照手册手工复走一遍」**：`verify.sh` 全绿但手册命令写错的题，只有这一步能查出来。
+- **SKILL.md 新增「不许为了让 verify 变绿去改产物」**：禁止删 apt 层、把 ENTRYPOINT 改 CMD、把题改简单来迁就验证器。
+- **SKILL.md 新增「效率纪律」**：先手动确认单点事实、单题先手测再批量、长跑先说时长、不用全量重跑回答"还有没有问题"、不轮询。
+- **SKILL.md 新增「主名派生一切」**：目录名是主名，challenge.yaml name、README 文件名、镜像 tag、tar 名全部从它派生。
+- **SKILL.md 新增「Flag 的内容形态」**：solve.py 不许假设长度和字符集。真实踩坑：只认 `flag{` 前缀、39 字符因向下取整少一位、`&` 被 XML 转义成 `&amp;`。
+- **SKILL.md 新增「已经有交付目录时」的五个体检问题**：上一版是简化版时逐题列出降级点，包括后门式简化（软链接直接放 web 根目录）。
+- **SKILL.md 新增「Pwn / 内核题必须原生跑一次」**：libc 段地址假设在模拟下成立、原生不成立的真实案例。
+- **SKILL.md 新增「垃圾清理一键命令」** 和 `python3 -B` 规定（避免只读检查生成 `__pycache__`）。
+- **SKILL.md 命名补「简洁可读优先，不要文艺化」**。
+- **SKILL.md 交付迁移补正确顺序**（先拷后核再删，先删后拷会丢数据）。
+- **`references/special.md` 新增「平台层限制的标准改法」**：`/dev/shm` noexec、token 鉴权、消息节奏、上游镜像拉不到，逐条给标准改法和是否算降级。
+- **`references/special.md` 新增「资源纪律」**：禁止 `docker system prune -af --volumes`（真实事故：删掉本机全部镜像 + 12 个卷约 65 GB）。
+- **`references/batch.md` 新增「共享规范文件放哪儿」**（交付根之外，`verify.sh` 会把 `_*` 判 failed）、**「接手检查清单」**、**「子 Agent 叫不醒时」的降级顺序**。
+- **`references/manual.md` 新增 1.7 完整可复制模板**、**「Web 类题的入口页」要求**、**1.5 里贴 flag_script**。
+- **`references/platform.md` 的 GZCTF 模板加醒目警告**：不是模板、不要抄进交付物（真实事故：14 道 Pwn 题的 start.sh 全抄了这段）。
+- **`references/dockerfiles.md` 新增「alpine 系必须装 bash」**，Node/nginx 范例同步加 `apk add bash`。
+
+### 变更
+
+- 判定「附件题少了 1.9」改为按 `is_container` 变量判断，不再重复 `-f Dockerfile`。
+- 手册 TODO 提示的节号按题型给：附件题的题目设计和解题步骤顺延成 1.7、1.8。
+- `references/special.md` 的 `changeflag.sh` 一节重写：平台自己注入，交付物里不该有同名文件；题目自己的 helper 改用 `/sync-flag.sh` 之类避免撞车。
+- 静态 Flag 题要求手册 1.5 写明这个值从哪考证来的；动态 Flag 题的占位值写什么都行，不再要求"必须占位"。
+
+### verify.sh
+
+- 新增 `dynflag_bash` 阶段：构建后探测镜像里有没有 `/bin/bash`。
+- 新增 `ready` 阶段：`--ready-cmd` 指定的命令返回 0 才算服务真的可用。
+- 新增 `check_similarity()`：3-gram Jaccard，跳过代码块和注释，只比正文。
+- 新增 solve.py 依赖检测：AST 解析 import + `importlib.util.find_spec`。
+- `assert_provenance()` 补取值枚举、`name` 与目录名一致、`original_material` 路径存在。
+- `--ready-timeout` 非数字直接退出码 2。
+- 修复：编辑时重复插入的「交付前自检清单」已删除。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- 原有 7 项附件题回归全部通过。
+- 新增 6 项回归（solve 依赖缺失、provenance 非法取值、name 不一致、original_material 缺失、`--ready-timeout` 非数字、`--similarity` 报告），CI 新增 `verify.sh regression (6.3.5 additions)` 步骤，本地跑通。
+- 容器题实测：alpine 无 bash → `dynflag_bash: failed`（exit 1）；`apk add bash` 后 → `dynflag_bash: passed`（exit 0）。
+- `--similarity` 在 AI-81-DVLAA 81 题上实测：精准标出 9 份套模板手册（0.61~0.66），其余 72 份零误报。
+- 三个 CI 步骤本地全部通过：attachment fixture、container static checks、6.3.5 additions。
+
 ## Unreleased
 
 ### 修复

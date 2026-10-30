@@ -102,6 +102,40 @@ wait "$MAIN_PID"
 
 必须保留多容器时，保留 `docker-compose.yml`，每个服务一个 Dockerfile，手册写清 Flag 写进哪个服务的哪个路径，并在交付说明里说明平台侧要额外支持 compose。`verify.sh` 只验证单容器，compose 题用 `docker compose up` 手动验证。
 
+## 平台层限制的标准改法
+
+有些"降级"不是 Agent 想偷懒，是平台或宿主的硬限制。遇到下面这些，按标准改法处理，**同一个问题不要每道题重新讨论一遍**，改完在 `provenance.simplified` 里写清。
+
+| 现象 | 标准改法 | 是否算降级 |
+|---|---|---|
+| `/dev/shm` 默认 `noexec`，payload 落地不了 | 改落到 `/run/exec`（同容器内，权限等价）；没权限就退回普通目录并在手册写明 | 不算，运行环境适配 |
+| 原题需要平台挂 `--tmpfs ...:exec` 或特定 `mem_limit` | 有权限就挂，没权限退回普通目录；在 `provenance.simplified` 写清"少了这块，资源约束弱于原题" | 算，要问用户 |
+| 原题鉴权依赖比赛平台签发的 token，材料里只有公钥 | 换成服务端随机会话 token，链路的"鉴权 + 伪造/绕过"两步都保留 | 不算，签发方换了、难度没变 |
+| 组委会/评分模拟器的消息节奏慢，压不进 `--solve-timeout` | **调大 `--solve-timeout` 或 `--ready-timeout`**，不要压缩题目流程 | 压缩流程算降级，绝对不许 |
+| 上游基础镜像拉不到（`ustclug/debian:12` 404） | 换成官方同名镜像（`debian:12`），在 Dockerfile 注释写清来源和替换理由 | 不算，但要在 `original_material` 里记一笔 |
+| 某依赖只有新版本还能装，原版本已下架 | 先按 [dockerfiles.md](dockerfiles.md) 的「旧版本运行时」换归档源；仍装不上就标 `incomplete` 并停下问用户 | 算，要问用户 |
+
+**判据还是那条**：选手打的那条链，经过的每一层是不是还在。在的就不算降级。
+
+## 资源纪律（会伤到用户本机）
+
+批量做 AI 题时镜像动辄 2~7 GB。**禁止 `docker system prune`、`docker system prune -af --volumes`、`docker image prune -a` 这类全量清理**——用户本机上其它项目的镜像和卷会被一起删掉。真实事故：一次 `docker system prune -af --volumes` 删掉了本机全部镜像和 12 个卷，约 65 GB。
+
+允许的清理方式：
+
+```bash
+# 只删自己这次建出来的镜像，按题目名 tag 精确匹配
+docker rmi "ctf-verify-<slug>-<suffix>:test" 2>/dev/null
+
+# 只删自己起的容器
+docker rm -f "ctf-verify-$$" 2>/dev/null
+
+# 只删自己建名前缀的镜像
+docker images --format '{{.Repository}}:{{.Tag}}' | grep '^ctf-verify-' | xargs -r docker rmi
+```
+
+不确定某个镜像是不是自己的，就不要删，问用户。
+
 ## CMS / 老框架题（源码完整但缺原题数据库快照）
 
 老 CMS、二开系统的题经常只有源码，`install.sql`、`data/`、`database.sql` 要么缺失要么是占位内容。这类题的容器能起来，页面却是空的，漏洞链走不通。
@@ -316,15 +350,100 @@ RDG 手册的重点和普通题不同，见 [manual.md](manual.md)：
 
 这类题的 Flag 在 guest 内部，host 层的 `changeflag.sh` 只写 host 文件、guest 看不到——Flag 要写进 rootfs（或 FAT 分区），或者由 guest 的启动脚本从共享位置读。
 
+### Flag 同步等待（这个模板是实测出来的）
+
+平台是**容器起来之后**才写 `/flag` 的。实测延迟多数 1~4 秒，**偶发 61 秒**（数信杯线上 6 台机器批量启动时观测到）。
+
+**不能用 `[ -f /flag ]` 判断。** Dockerfile 里 `COPY flag /flag` 让这个文件恒存在，`-f` 永远为真，同步会立刻把占位值搬进去。
+
+正确的判据是三个条件同时成立：
+
+1. 内容**不等于镜像自带的静态值**（构建时把静态值的 sha256 写进镜像，或从 changeflag.sh 的 `DEFAULT_FLAG` 读）
+2. 内容符合完整的 `flag{...}` 格式（避免读到 `printf` 截断的半截值）
+3. 隔 0.3 秒复核一次，内容不再变化（确认平台已经写完）
+
+超时默认 120 秒（覆盖实测的 61 秒），**超时后不阻塞启动**，用当前值继续并打 `[WARN]`，运行期再重读仍然能兜住更晚的写入。
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+FLAG_FILE="/flag"
+FLAG_WAIT_TIMEOUT="${FLAG_WAIT_TIMEOUT:-120}"
+
+flag_text() {
+  [[ -f "$1" ]] || return 0
+  tr -d '\r\n' < "$1" 2>/dev/null || true
+}
+
+# 判据：非空、不是镜像自带静态值、符合完整 flag{} 格式。
+is_platform_flag() {
+  local value
+  value="$(flag_text "$1")"
+  [[ -n "${value}" ]] || return 1
+  [[ "${value}" != "${IMAGE_STATIC_FLAG}" ]] || return 1
+  [[ "${value}" =~ ^flag\{.+\}$ ]] || return 1
+  return 0
+}
+
+wait_for_platform_flag() {
+  local file="$1" timeout="$2" waited=0
+  if is_platform_flag "${file}"; then
+    echo "[INFO] ${file} 已是平台写入的值，无需等待"
+    return 0
+  fi
+  echo "[INFO] 等待平台写入 ${file}（最多 ${timeout} 秒）"
+  while [[ "${waited}" -lt "${timeout}" ]]; do
+    sleep 1
+    waited=$((waited + 1))
+    is_platform_flag "${file}" || continue
+    sleep 0.3                       # 复核一次，确认平台已经写完
+    if is_platform_flag "${file}"; then
+      echo "[INFO] 检测到平台写入 ${file}（等待 ${waited} 秒）"
+      return 0
+    fi
+  done
+  echo "[WARN] 等待 ${timeout} 秒仍未检测到完整值；服务继续启动，运行期重读兜住更晚的写入"
+  return 1
+}
+
+wait_for_platform_flag "${FLAG_FILE}" "${FLAG_WAIT_TIMEOUT}" || true
+
+# 拿到值之后再同步进 guest / 配置文件 / 数据库
+# ...
+```
+
+`IMAGE_STATIC_FLAG` 在 Dockerfile 构建时算好写进镜像：
+
+```dockerfile
+# 把静态占位值的 sha256 写进镜像，运行期用它判断平台有没有覆盖写。
+RUN printf '%s' "$(cat /flag)" | sha256sum | cut -d' ' -f1 > /opt/static-flag.sha256
+```
+
+运行期比对 sha256，不要比明文——明文在镜像里，选手能读。
+
 ### Flag 同步的校验清单
 
-平台是**容器起来之后**才写 `/flag` 的，所以容器启动时搬一次是不够的。逐条核对：
-
-1. **同步循环要一直跑**，不能只在启动时搬一次。判断依据是 `while` 循环里比较校验和，不是启动时一句 `cp`。
+1. **同步循环要一直跑**，不能只在启动时搬一次。
 2. **写失败要能看见。** 不写 `cp /flag <target> 2>/dev/null || true`。写不进去时打一行明确日志，或让循环返回非零。
 3. **目标文件不能是只读。** 给 guest 镜像里的 `esp/FLAG` 加 `chmod 444`，下一轮同步就写不进去，QEMU 只会打一行 `Tried to write to write-protected file`，选手拿到的永远是占位值。
 4. **宿主侧要能回读 guest 实际看到的值。** 只确认 host 上的文件写成功不算通过。
 5. **验证脚本写第二个 Flag 再解一次。** `verify.sh` 默认会做这一步；第一次能过、第二次拿旧值，就说明同步没生效。
+
+### QEMU 题必加 `--ready-cmd`
+
+QEMU 一启动就占住转发端口，但 guest 还没起完。`verify.sh` 只判"端口在监听"时会误判已就绪，solve 的 120 秒预算全被启动吃掉。
+
+给一个"真的能用"的判据：
+
+```bash
+bash scripts/verify.sh <题目目录> \
+  --ready-cmd 'ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no root@127.0.0.1 -p <PORT> true' \
+  --ready-timeout 180 \
+  --solve-timeout 300
+```
+
+另外：guest 的 sshd banner 要几秒才出来，密集探活会触发 `MaxStartups` 限流，越探越连不上。`--ready-cmd` 里用 `ConnectTimeout=3`，探活间隔由 `verify.sh` 固定 2 秒。
 
 ### 不许把超时当结论
 
@@ -346,14 +465,27 @@ QEMU 题跑得慢是正常的，但**慢不是结论**。看到解题超时，�
 
 构建和手动验证的历史流程见 v3.0.1 的 [`docs/linux_qemu_manual_validation.md`](https://github.com/D1a0y1bb/CloverSec-CTF-Pack/blob/v3.0.1/src/CloverSec-CTF-Build-Dockerizer/docs/linux_qemu_manual_validation.md)。
 
-## 旧平台 helper（changeflag.sh）
+## changeflag.sh 到底是什么
 
-有些老题/老平台约定由容器内 `/changeflag.sh` 来写 Flag，而不是平台直接写。只有这三种情况才需要它：
-1. 迁移的老题本身就依赖 `/changeflag.sh`；
-2. Linux-QEMU 需要 guest 注入；
+**凌虚平台的 `/changeflag.sh` 是平台自己注入的，不是交付物。**
+
+出题人在平台后台填一段 `flag_script`，平台把它打成 tar、`put_archive` 成容器里的 `/changeflag.sh`、`chmod +x`、**`/bin/bash /changeflag.sh`** 执行、执行完 `rm -rf`。完整链路见 [platform.md](platform.md) 的「动态 Flag 的真实机制」。
+
+所以：
+
+- **常规题不要在交付物里放 `changeflag.sh`，也不要在 Dockerfile 里 `COPY` 它。** 平台会自己注入一个，两个同名文件只会打架。
+- 交付时要给的是**手册 1.5 里那段可粘贴的 `flag_script` 文本**。
+- 镜像里必须有 `/bin/bash`，否则平台注入的脚本执行失败。
+
+### 哪些情况仍然需要文件形态的 changeflag.sh
+
+只有这三种：
+
+1. 迁移的老题本身就依赖镜像内的 `/changeflag.sh`（旧平台 helper 合同）；
+2. Linux-QEMU 需要 guest 注入，而题目自己的 start.sh 要调用它；
 3. 用户明确要求旧 helper 合同。
 
-需要时的最小形态：
+需要时：
 
 ```bash
 #!/bin/bash
@@ -364,4 +496,8 @@ printf '%s\n' "${FLAG:-${1:-}}" > "$TARGET"
 chmod 444 "$TARGET"
 ```
 
-对应 Dockerfile 要 `COPY changeflag.sh /changeflag.sh` 且 `chmod 555`，并确保镜像里有 `/bin/bash`。常规 direct-write 题不需要这个文件。
+对应 Dockerfile 要 `COPY changeflag.sh /changeflag.sh` 且 `chmod 555`，并确保镜像里有 `/bin/bash`。
+
+### 不同名，避免和平台注入的撞车
+
+题目自己的 helper 建议改名叫 `/sync-flag.sh` 之类，不要叫 `/changeflag.sh`——平台注入的那个会被 `rm -rf`，你的文件如果同名会被一起删掉。

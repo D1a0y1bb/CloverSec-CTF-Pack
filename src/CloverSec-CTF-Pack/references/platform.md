@@ -3,6 +3,7 @@
 ## 目录
 
 - 平台怎么跑题目
+- 动态 Flag 的真实机制（凌虚平台源码还原）
 - 用环境变量传 Flag 的平台
 - 镜像 tar 的格式
 - Flag 路径与写入方式
@@ -11,30 +12,129 @@
 ## 平台怎么跑题目
 
 1. 用 Dockerfile 构建 `linux/amd64` 镜像。在 Apple Silicon 上构建要加 `--platform linux/amd64`，否则导出的镜像在平台上起不来。
-2. `docker run -d -p <映射> <镜像> /start.sh` 启动。`/start.sh` 覆盖 `CMD`；`ENTRYPOINT` 不为空时 `/start.sh` 会变成它的参数，官方 php、nginx、node 镜像的 `docker-*-entrypoint` 会原样执行参数，不受影响。
-3. 容器起来后，平台以 root 执行：
+2. 平台以 `/start.sh` 作为命令起容器：
 
-   ```bash
-   docker exec <容器> sh -c 'printf "%s\n" "$1" > "$2"' sh "$new_flag" "$flag_path"
+   ```python
+   containers.run(img_name, name=..., detach=True, ports=...,
+                  restart_policy={"Name": "on-failure", "MaximumRetryCount": 5},
+                  command='/start.sh')
    ```
 
-   所以镜像里要有 `sh`，`flag.path` 的目录要存在。distroless、scratch 镜像不能直接用。
-4. 选手访问映射出来的端口，服务要监听 `0.0.0.0`。
+   所以 `/start.sh` 必须是镜像里的真实入口，末尾 `exec` 主服务让它前台运行。`ENTRYPOINT` 不为空时 `/start.sh` 会变成它的参数。
+   **只有 AI 类白名单镜像会被平台加内存/CPU 上限**，普通题目不设任何限制（见 `docker_api.py`）。
+3. 选手访问映射出来的端口，服务要监听 `0.0.0.0`。
+
+## 动态 Flag 的真实机制（凌虚平台源码还原）
+
+> 下面这些来自 `LingXu-Platform/.../system/project/` 的源码，不是推测。题目交付时按这个机制设计，不要按"平台会往 flag.path 写文件"来假设。
+
+### 完整链路
+
+```text
+1. 出题人在平台后台填一段 flag_script（文本框，不是文件）
+   保存时校验必须含 $new_flag，否则报「缺少必要参数，请确认flag脚本是否正确」
+   （admin_test/serializers.py:196-200）
+
+2. 选手开环境 → 平台 containers.run(command='/start.sh') 起容器
+
+3. 平台生成动态值（docker_api.py:343-353）：
+   s = 静态flag + str(team_id 或 user_id) + str(container.short_id)
+   new_flag = "flag{" + md5(s) + "}"
+   flag_script = flag_script.replace("$new_flag", new_flag)
+   → 然后把 flag_script 作为 Celery 任务丢出去（tasks.dynamic_flag.delay）
+
+4. Celery 侧 copy_to()（base_app/tasks.py:27-64）：
+   a. 把 flag_script 写成临时文件，打成 tar，arcname="changeflag.sh"
+   b. container.put_archive("/", tar)  →  容器里出现 /changeflag.sh
+   c. container.exec_run("chmod +x /changeflag.sh")
+   d. container.exec_run("/bin/bash /changeflag.sh")   ← 最多重试 30 次
+   e. container.exec_run("rm -rf /changeflag.sh")
+
+5. 重试判据：只有输出里含 "Can't connect to local MySQL server through socket"
+   才会 sleep 1 再试（settings.py:410 DYNAMIC_FLAG_ERROR_LIST）。
+   其他任何错误（including 找不到 bash、权限拒绝）第一次就放弃。
+```
+
+### 由此推出的硬规则
+
+**规则 1：镜像里必须有 `/bin/bash`。**
+
+平台是用 `/bin/bash` 执行注入脚本的，不是 `sh`。alpine、slim、distroless、scratch 系镜像默认没有 `/bin/bash`，注入会直接失败，Flag 停在占位值，选手拿到错的 Flag，而平台只在前端提示"环境启动异常"。
+
+- 用 `python:*-alpine`、`node:*-alpine`、`php:*-alpine` 时，Dockerfile 里加 `RUN apk add --no-cache bash`。
+- 用 `ubuntu`、`debian`、`python:*-slim`（bookworm 系）时默认就有，不用加。
+- 用 distroless / scratch 时**不能**用动态 Flag，只能静态 Flag 或换基础镜像。
+
+`verify.sh` 会在构建后探测镜像里有没有 `/bin/bash`，没有直接判 `failed`。
+
+**规则 2：`flag_script` 由出题人在平台后台填，不随交付物走。**
+
+Skill 不生成 `changeflag.sh` 交付文件（旧平台 helper 除外，见 `special.md`）。交付时在手册 1.5 里给出**可直接粘贴到平台后台的 flag_script**，出题人复制过去即可。
+
+**规则 3：动态值不是随机的。**
+
+`flag{md5(静态flag + 用户id + 容器short_id)}`。同一用户重开同一容器会得到同一个 Flag。所以不要用"每次不同"来判断动态 Flag 是否生效——用"和镜像里的占位值不同"来判断。
+
+### flag_script 标准模板
+
+直接复制到平台后台的 `flag_script` 文本框。`$new_flag` 必须保留，平台会替换它。
+
+```bash
+#!/bin/bash
+set -uo pipefail
+# 平台注入时已把 $new_flag 替换成本实例的动态值。
+# 这里只负责把它写进题目程序真正读取的位置。
+printf '%s\n' "$new_flag" > /flag
+chmod 444 /flag
+```
+
+目标路径不是 `/flag` 时改最后两行；需要同步到数据库、配置文件、QEMU rootfs 时，在 `printf` 之后接你的同步命令。**不要**在这个脚本里做耗时操作——平台有 30 次重试，但每次失败都会让环境启动变慢。
+
+多目标的例子（程序读 `/home/ctf/flag` 且另有配置文件）：
+
+```bash
+#!/bin/bash
+set -uo pipefail
+printf '%s\n' "$new_flag" > /home/ctf/flag
+chown root:ctf /home/ctf/flag && chmod 440 /home/ctf/flag
+printf 'FLAG=%s\n' "$new_flag" > /app/.env
+```
+
+### 排障：Flag 写不进去怎么查
+
+按这个顺序查，别猜：
+
+1. **镜像里有没有 `/bin/bash`**：`docker run --rm --entrypoint sh <镜像> -c 'test -x /bin/bash && echo OK || echo NO_BASH'`
+2. **平台有没有配 `flag_script`**：题目配置里 `flag_type` 必须是 2（动态 Flag），且脚本里必须有 `$new_flag`。
+3. **脚本本身有没有报错**：`docker logs` 看不到 changeflag.sh 的输出（它是在 exec 里跑的），平台把错误写进了 `DockerEnvRun.error_msg`，前端提示"环境启动异常"。让运维查这个字段。
+4. **写进去了但程序读不到**：程序读的不是脚本写的那个路径，或者程序在启动时把 Flag 读进了内存。
+
+### 时序：平台写入晚于服务启动
+
+平台写入发生在容器启动**之后**，实测延迟多数 1~4 秒，**偶发 61 秒**（数信杯线上 6 台机器批量启动时观测到）。
+
+如果程序在启动时读一次 Flag（Python 模块级变量、Java `static` 块、import 时读配置），或者要把 Flag 同步进 QEMU guest，就会拿到占位值或静态旧值。
+
+处理办法见 `special.md` 的「Flag 同步等待」一节。核心是：**等到"平台写入的值"而不是"文件存在"**，判据三条件（内容≠静态值、符合 `flag{.+}`、0.3 秒复核不变），超时 120 秒不阻塞启动。
 
 ## 用环境变量传 Flag 的平台
 
-**只为四叶草平台出的题不要加这一段。** 下面的代码不是模板，是给"确实要在 GZCTF、DASCTF 上跑"的题目用的。照抄进交付物会把别的平台的合同带进四叶草平台，`verify.sh` 会报 `partial` 提醒。
+> **只为四叶草平台出的题，这一整节都不要用。** 下面这段代码**不是模板**，是给"确实要在 GZCTF、DASCTF 上跑"的题目用的。**不要复制进交付物。**
+>
+> 写出来只是因为以前发生过：Agent 看到这段可复制的代码就抄进了 14 道 Pwn 题的 `start.sh`，用户问「这里面怎么还有 GZCTF_FLAG 这玩意呢」。四叶草平台不走这条路，抄进去只会带进别的平台的合同。
 
-GZCTF、DASCTF 等平台在 `docker run` 时用环境变量传 Flag（`GZCTF_FLAG`、`DASFLAG`、`FLAG`），不会再执行写文件的命令。题目要在这类平台上用时，start.sh 开头加一段：
+GZCTF、DASCTF 等平台在 `docker run` 时用环境变量传 Flag（`GZCTF_FLAG`、`DASFLAG`、`FLAG`），不会再执行写文件的命令。**只有在确认这道题要交到那几个平台时**，才在 start.sh 开头加：
 
 ```bash
-# 平台用环境变量传 Flag 时写进 flag.path，写完清掉变量，选手读 /proc/1/environ 拿不到。
+# 仅用于 GZCTF / DASCTF。四叶草平台不要这段。
 FLAG_VALUE="${GZCTF_FLAG:-${DASFLAG:-${FLAG:-}}}"
 if [ -n "$FLAG_VALUE" ]; then
     printf '%s\n' "$FLAG_VALUE" > /flag
     unset GZCTF_FLAG DASFLAG FLAG FLAG_VALUE
 fi
 ```
+
+`verify.sh` 见到 `start.sh` 里有 `GZCTF_FLAG` / `DASFLAG` 会报 `partial` 提醒核实。
 
 ## 静态 Flag 题（平台不写 Flag）
 
