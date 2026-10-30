@@ -411,11 +411,18 @@ assert_handbook() {
     return
   fi
   # 手册里出现同级别的题目的 name，说明是复制粘贴串了。
+  # 同批其他题目的 name。太短的名字（Web、Pwn、某）不参与比对，否则任何手册里写
+  # "Web 页面"都会误报。长度按字符算，不按字节——1 个汉字是 3 字节，用 awk 会漏掉这个区分。
   if [ -d "${PROJECT}/.." ]; then
     OTHER_NAMES=$(for f in "${PROJECT}/../"*/challenge.yaml; do
       [ -f "$f" ] || continue
       sed -nE 's/^[[:space:]]*name:[[:space:]]*["'\'']?([^"'"'"'[:space:]]+).*/\1/p' "$f" | head -1
-    done | grep -vx "$(basename "$PROJECT")" | awk 'length($0) >= 3' | sort -u)
+    done | grep -vx "$(basename "$PROJECT")" \
+      | python3 -c 'import sys
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if len(line) >= 4:
+        print(line)' 2>/dev/null | sort -u)
     if [ -n "$OTHER_NAMES" ]; then
       HIT_OTHER=$(printf '%s\n' "$OTHER_NAMES" | while IFS= read -r on; do
         [ -n "$on" ] && grep -qF "$on" "$expected" && echo "$on"
@@ -541,6 +548,16 @@ assert_provenance() {
 #   3. 比赛归档：题目镜像/ 题目源码/ 题目手册/
 # 后两种已经在平台上跑过、比赛用过了，结构检查对它们没有意义，
 # 别报一堆「没有 Dockerfile」「白名单外的条目」把真问题淹掉。
+# 有 start.sh 就说明按容器题交付，缺 Dockerfile 是错误，不是"当成附件题"静默放过。
+# challenge.yaml 不算判据——附件题可以带一个只声明 provenance 的 challenge.yaml。
+if [ ! -f Dockerfile ] && [ -f start.sh ]; then
+  echo "== 目录形态"
+  echo "   有 start.sh 但没有 Dockerfile"
+  stage delivery failed
+  fail "这个目录有 start.sh，按容器题交付，但没有 Dockerfile。确认是漏了文件还是拿错了目录"
+  finish
+fi
+
 if [ ! -f Dockerfile ] && [ ! -f start.sh ] && [ ! -f challenge.yaml ]; then
   echo "== 目录形态"
   ONLY_TAR=$(ls -1 *.tar 2>/dev/null | head -1)
@@ -575,6 +592,11 @@ if [ ! -f Dockerfile ] && [ ! -f start.sh ] && [ ! -f challenge.yaml ]; then
     finish
   fi
 fi
+
+# STATIC_FLAG 要在手册检查之前就算出来：assert_handbook 里的 1.5 核对要按静态/动态分支。
+# 原来它到写 Flag 那一段才赋值，导致所有静态 Flag 题走动态分支，报三条假阳性。
+STATIC_FLAG=0
+case "$YAML_FLAG_MODE" in static) STATIC_FLAG=1;; esac
 
 echo "== 检查手册"
 assert_handbook
@@ -651,7 +673,7 @@ if report:
     print(f"   报告: {report}")
 sys.exit(2 if high else 0)
 PY
-  [ "$sim_rc" = 2 ] && partial "手册与同批其他题目高度雷同（>=0.6），逐题确认这不是套模板批量生成。用户明确说过「样式不能都一样」"
+  [ "$sim_rc" = 2 ] && hint "手册与同批其他题目高度雷同（>=0.6），逐题确认这不是套模板批量生成。用户明确说过「样式不能都一样」"
   return 0
 }
 check_similarity
@@ -662,6 +684,11 @@ shopt -s nullglob dotglob
 EXTRA=()
 for entry in "$PROJECT"/*; do
   name=$(basename "$entry")
+  # 已知垃圾文件走下面的 JUNK 检查（只提醒），不要在这里判成白名单外条目（failed）。
+  # 否则根目录一个 .DS_Store 就会把整题判死，和"垃圾文件只提醒"的规则打架。
+  case "$name" in
+    .DS_Store|Thumbs.db|__pycache__|.venv|*.pyc) continue;;
+  esac
   whitelisted "$name" || EXTRA+=("$name")
 done
 JUNK=()
@@ -682,23 +709,23 @@ fi
 if [ ${#JUNK[@]} -gt 0 ]; then
   # .DS_Store / __pycache__ / *.pyc 只提醒，不改结论。
   [ "$DELIVERY" = passed ] && DELIVERY=partial
-  partial "交付目录里有垃圾文件：${JUNK[*]}。一条命令清掉：find <交付根> \\( -name .DS_Store -o -name __pycache__ -o -name '*.pyc' \\) -print -delete"
+  hint "交付目录里有垃圾文件：${JUNK[*]}。一条命令清掉：find <交付根> \\( -name .DS_Store -o -name __pycache__ -o -name '*.pyc' \\) -print -delete"
 fi
 if [ "$DELIVERY" = passed ]; then
   # 两个包共用硬链接时，单独复制其中一个会丢内容——交付包必须能独立拷走。
   HARDLINK=$(find "$PROJECT" -type f -links +1 -print 2>/dev/null | head -5)
   if [ -n "$HARDLINK" ]; then
     DELIVERY=partial
-    partial "交付目录里有硬链接文件（多包共享同一 inode），单独复制这个包会丢内容。逐个 cp 一遍即可拆开：$(printf '%s ' $HARDLINK)"
+    hint "交付目录里有硬链接文件（多包共享同一 inode），单独复制这个包会丢内容。逐个 cp 一遍即可拆开：$(printf '%s ' $HARDLINK)"
   fi
 fi
 if [ "$DELIVERY" = passed ]; then
   # 选手附件必须是能独立打开的：0 字节、坏 zip、macOS 垃圾都算。
   if [ -d 附件 ]; then
     EMPTY_ATT=$(find 附件 -type f -size 0 -print 2>/dev/null | head -3)
-    [ -n "$EMPTY_ATT" ] && { DELIVERY=partial; partial "附件里有 0 字节文件：$(printf '%s ' $EMPTY_ATT)，选手拿到也解不了"; }
+    [ -n "$EMPTY_ATT" ] && hint "附件里有 0 字节文件：$(printf '%s ' $EMPTY_ATT)，选手拿到也解不了"
     MACOS_JUNK=$(find 附件 \( -name '__MACOSX' -o -name '.DS_Store' \) -print 2>/dev/null | head -3)
-    [ -n "$MACOS_JUNK" ] && { DELIVERY=partial; partial "附件里带 macOS 打包垃圾：$(printf '%s ' $MACOS_JUNK)。在 Linux 上重打，或清除后再交付"; }
+    [ -n "$MACOS_JUNK" ] && hint "附件里带 macOS 打包垃圾：$(printf '%s ' $MACOS_JUNK)。在 Linux 上重打，或清除后再交付"
   fi
 fi
 [ "$DELIVERY" = passed ] && echo "   干净"
@@ -723,7 +750,7 @@ if [ -f start.sh ]; then
     2>/dev/null | head -3)
   if [ -n "$FLAG_WRITE_LINES" ]; then
     stage hygiene partial
-    partial "start.sh 里在写或改 flag 文件：${FLAG_WRITE_LINES//$'\n'/; }。平台注入的脚本自己会写 Flag，start.sh 再写一遍会覆盖或写死占位值。只有「平台用环境变量传 Flag」和「题目按原设计生成静态 Flag」两个例外，其余删掉"
+    hint "start.sh 里在写或改 flag 文件：${FLAG_WRITE_LINES//$'\n'/; }。平台注入的脚本自己会写 Flag，start.sh 再写一遍会覆盖或写死占位值。只有「平台用环境变量传 Flag」和「题目按原设计生成静态 Flag」两个例外，其余删掉"
   fi
   # 只为四叶草平台出的题不需要环境变量兼容段，照抄模板会把别的平台的合同带进交付物。
   if grep -qE 'GZCTF_FLAG|DASFLAG' start.sh; then
@@ -748,7 +775,7 @@ if [ -d src ] || [ -d 附件 ] || [ -d 题目附件 ]; then
     -e 'passwd[[:space:]]*[:=]' \
     -e 'AKIA[0-9A-Z]{16}' \
     -e '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' \
-    src 附件 2>/dev/null \
+    src 附件 题目附件 2>/dev/null \
     | grep -viE 'placeholder|example|your_|changeme|<.*>|\$\{|\{[a-zA-Z_]|FLAG|flag\{|FLAG_|test|demo|dummy|123456|password2|密码框|_USERNAME|_PASSWORD|_USER|_PASS|username=|password=|HIS_' \
     | head -5)
   if [ -n "$PII_HITS" ]; then
@@ -769,7 +796,7 @@ $(printf '%s\n' "$PII_HITS" | sed 's/^/     /')"
   FLAG_RESIDUE=$(printf '%s' "$FLAG_RESIDUE" | tr ' ' '\n' | grep -v '^$' | head -5 | tr '\n' ' ')
   if [ -n "$FLAG_RESIDUE" ]; then
     stage hygiene partial
-    partial "这些文件里有 flag 形态的字符串：$(printf '%s ' $FLAG_RESIDUE)。确认是占位值不是测试残留——真实 flag 随镜像发给选手，题目就白给了"
+    hint "这些文件里有 flag 形态的字符串：$(printf '%s ' $FLAG_RESIDUE)。确认是占位值不是测试残留——真实 flag 随镜像发给选手，题目就白给了"
   fi
 
   # 真实 PII：证件号、手机号密度高的数据文件。单条不算，文件里成批出现才报。
@@ -791,23 +818,44 @@ if [ -z "$CHECK" ] && [ -f "${PROJECT}/check/check.sh" ]; then CHECK="./check/ch
 
 # ---------- 解题命令
 [ -n "$SOLVE" ] || { [ -f solve/solve.py ] && SOLVE="python3 solve/solve.py"; }
-# solve 引用了第三方库却没写安装命令时，换台干净机器就会失败。
-if [ -f solve/solve.py ] \
-   && grep -qE '^[[:space:]]*(import|from)[[:space:]]+(requests|numpy|PIL|z3|fpylll|sage|pwn|Crypto|gmpy2|volatility3|pypykatz|cv2|scipy|pillow|PIL)\b' solve/solve.py \
-   && ! grep -q 'pip install' solve/solve.py; then
-  stage hygiene partial
-  partial "solve/solve.py 引用了第三方库，但文件开头没有注释写明 pip install 命令，换台机器就跑不起来"
-fi
-# 更根本的问题：本机装了某个库，所以 verify passed，换到评测机就 ImportError。
-# 逐个验证 solve.py 里 import 的第三方模块在本机是否真的能导入；不能导入的直接判 failed。
+# 本机装了某个库所以 verify passed、换到评测机 ImportError。逐个验证 solve.py 里 import 的模块。
+# 三种情况不算问题，必须排除，否则误报率很高：
+#   1. solve/ 目录下的本地模块（from helper import ...）
+#   2. try/except ImportError 包住的可选依赖（z3 之类只是加速路径）
+#   3. 文件头已经注明 pip install 的
+# 而且这条只提示，不判 failed——依赖能不能装上是评测环境的事，本地判不了。
 if [ -f solve/solve.py ] && command -v python3 >/dev/null 2>&1; then
-  MISSING_MODS=$(python3 -B - solve/solve.py <<'PY' 2>/dev/null
-import ast, importlib.util, sys
+  MISSING_MODS=$(python3 -B - solve/solve.py <<'PYDEP' 2>/dev/null
+import ast, importlib.util, os, sys
+
 STD = set(sys.stdlib_module_names) if hasattr(sys, "stdlib_module_names") else set()
+path = sys.argv[1]
+local_dir = os.path.dirname(os.path.abspath(path))
+local = {os.path.splitext(f)[0] for f in os.listdir(local_dir) if f.endswith(".py")}
 try:
-    tree = ast.parse(open(sys.argv[1], encoding="utf-8", errors="replace").read())
+    tree = ast.parse(open(path, encoding="utf-8", errors="replace").read())
 except Exception:
     sys.exit(0)
+
+# try/except ImportError 包住的是可选依赖（z3 之类只当加速路径），不算缺失。
+optional = set()
+for node in ast.walk(tree):
+    if not isinstance(node, ast.Try):
+        continue
+    body_mods = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Import):
+            for a in sub.names:
+                body_mods.add(a.name.split(".")[0])
+        elif isinstance(sub, ast.ImportFrom) and sub.level == 0 and sub.module:
+            body_mods.add(sub.module.split(".")[0])
+    handled = any(
+        (getattr(h.type, "id", None) or getattr(h.type, "attr", None)) in ("ImportError", "ModuleNotFoundError")
+        for h in node.handlers if h.type is not None
+    )
+    if body_mods and handled:
+        optional |= body_mods
+
 mods = set()
 for node in ast.walk(tree):
     if isinstance(node, ast.Import):
@@ -816,9 +864,10 @@ for node in ast.walk(tree):
     elif isinstance(node, ast.ImportFrom):
         if node.level == 0 and node.module:
             mods.add(node.module.split(".")[0])
+
 missing = []
 for m in sorted(mods):
-    if m in STD or m.startswith("_"):
+    if m in STD or m.startswith("_") or m in local or m in optional:
         continue
     try:
         if importlib.util.find_spec(m) is None:
@@ -826,11 +875,14 @@ for m in sorted(mods):
     except (ImportError, ValueError):
         missing.append(m)
 print(" ".join(missing))
-PY
+PYDEP
 )
   if [ -n "$MISSING_MODS" ]; then
-    stage solve failed
-    fail "solve/solve.py 依赖的模块在本机导不进来：${MISSING_MODS}。本机能跑不代表评测机有这些库——改成标准库实现，或在文件开头注释写明 pip install 命令并确认评测环境会装"
+    if grep -q 'pip install' solve/solve.py; then
+      hint "solve/solve.py 依赖的模块本机没装：${MISSING_MODS}。文件里注明了 pip install，确认评测环境会装即可"
+    else
+      hint "solve/solve.py 依赖的模块在本机导不进来：${MISSING_MODS}。如果它不是标准库也不是本地模块，文件开头写清 pip install 命令，并确认评测环境会装"
+    fi
   fi
 fi
 
@@ -1051,7 +1103,7 @@ if [ -d 镜像 ] || [ -d 题目镜像 ]; then
     fi
     case "$CUR_ID" in
       "$TAR_ID"*) ;;
-      *) partial "$(basename "$t") 和当前构建不一致（tar ${TAR_ID:0:12}… vs 当前 ${CUR_ID:0:12}…）。改了 Dockerfile/start.sh/src 之后要重新 docker save，否则平台按 tar 部署时改动不生效" ;;
+      *) hint "$(basename "$t") 和当前构建不一致（tar ${TAR_ID:0:12}… vs 当前 ${CUR_ID:0:12}…）。改了 Dockerfile/start.sh/src 之后要重新 docker save，否则平台按 tar 部署时改动不生效" ;;
     esac
   done
 fi
@@ -1112,8 +1164,9 @@ echo "   容器运行中"
 PID1=$(docker exec "$CONTAINER" sh -c 'tr "\0" " " </proc/1/cmdline' 2>/dev/null)
 case "$PID1" in *start.sh*) hint "PID 1 是 start.sh（${PID1}），确认主服务退出时 start.sh 也会退出，否则平台发现不了题目挂掉";; esac
 
-# ---------- 写入测试 Flag：命令和平台一致，以 root 用 sh 重定向写入
-# 以 root 重定向总能写成功，所以"写不进去"不能当判据；先看题目有没有 Flag 合同。
+# ---------- 写入测试 Flag：先用 root 确认目标可写，再按镜像 USER 模拟平台
+# 用 -u 0 写只能证明目标文件本身可写，不能证明平台写得进去——平台 exec_run 不传 user，
+# 继承镜像的 USER。下面还会按镜像 USER 再写一次。
 # 两边都缺才算没有合同：challenge.yaml 没声明 flag.path，镜像里也没有占位 Flag。
 # 只有一边缺时照常跑——缺的那边多半是别的问题，不该在这里当成"没有 Flag 合同"放过去。
 HAS_PLACEHOLDER=0
@@ -1128,8 +1181,7 @@ NO_FLAG_CONTRACT=0
 [ "$HAS_PLACEHOLDER" = 1 ] || [ "$HAS_DECLARED" = 1 ] || NO_FLAG_CONTRACT=1
 
 # 静态 Flag 题：平台不写 Flag，只比对选手提交的字符串，写 Flag 这一步没有意义。
-STATIC_FLAG=0
-case "$YAML_FLAG_MODE" in static) STATIC_FLAG=1;; esac
+# STATIC_FLAG 已在手册检查之前赋值。
 
 TESTFLAG="flag{verify_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')}"
 TESTFLAG2="flag{rotate_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')}"
@@ -1228,7 +1280,7 @@ for p in "${PORTS[@]+"${PORTS[@]}"}"; do
     # 选手第一屏：root 路径 404/403 且没配 probe_path 时，选手打开看到的是错误页。
     # 真实案例：nghttpx 题首页返回纯文本 NOT-FOUND，Agent 自陈"确实像糊弄"。
     if { [ "$CODE" = 404 ] || [ "$CODE" = 403 ]; } && [ "$PROBE_PATH" = / ]; then
-      partial "端口 $p 的根路径返回 ${CODE}，选手打开就是错误页。有真实入口就在 challenge.yaml 的 verification.solve_probe.path 里指定，或把首页做成能说明这道题是什么的页面"
+      hint "端口 $p 的根路径返回 ${CODE}，选手打开就是错误页。有真实入口就在 challenge.yaml 的 verification.solve_probe.path 里指定，或把首页做成能说明这道题是什么的页面"
     elif [ "$CODE" = 200 ]; then
       # 200 但内容是一行 NOT-FOUND / OK / 错误 JSON，也是糊弄。
       FIRST=$(curl -s --max-time 5 "http://127.0.0.1:${HP}${PROBE_PATH}" 2>/dev/null | head -c 400 | tr -s '[:space:]' ' ')
@@ -1237,7 +1289,7 @@ for p in "${PORTS[@]+"${PORTS[@]}"}"; do
       case "$LOW" in *not-found*|*notfound*) PLACEHOLDER=1;; esac
       case "$LOW" in *'"error"'*|*'not implemented'*) PLACEHOLDER=1;; esac
       if [ "$PLACEHOLDER" = 1 ]; then
-        partial "端口 $p 的首页返回的是占位内容（$(printf '%.60s' "$FIRST")）。选手打开第一屏必须能说明这道题是什么"
+        hint "端口 $p 的首页返回的是占位内容（$(printf '%.60s' "$FIRST")）。选手打开第一屏必须能说明这道题是什么"
       fi
     fi
     # 页面引用外网 CDN：比赛内网没有外网时页面直接裸奔。
@@ -1246,7 +1298,7 @@ for p in "${PORTS[@]+"${PORTS[@]}"}"; do
         | grep -oE 'https?://(cdn\.jsdelivr\.net|unpkg\.com|fonts\.googleapis\.com|cdnjs\.cloudflare\.com|ajax\.googleapis\.com)[^"'"'"' >]*' \
         | head -3 | tr '\n' ' ')
       if [ -n "$CDN" ]; then
-        partial "端口 $p 的页面引用了外网 CDN：${CDN}。比赛内网通常无外网，页面资源要全部打包进镜像"
+        hint "端口 $p 的页面引用了外网 CDN：${CDN}。比赛内网通常无外网，页面资源要全部打包进镜像"
       fi
     fi
   else

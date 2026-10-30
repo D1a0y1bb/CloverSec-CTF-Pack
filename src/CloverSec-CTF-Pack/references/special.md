@@ -388,6 +388,8 @@ set -euo pipefail
 
 FLAG_FILE="/flag"
 FLAG_WAIT_TIMEOUT="${FLAG_WAIT_TIMEOUT:-120}"
+# Dockerfile 构建时写进去的静态值 sha256；读不到就退化成"只比格式"。
+STATIC_SHA_FILE="/opt/static-flag.sha256"
 
 flag_text() {
   [[ -f "$1" ]] || return 0
@@ -399,8 +401,14 @@ is_platform_flag() {
   local value
   value="$(flag_text "$1")"
   [[ -n "${value}" ]] || return 1
-  [[ "${value}" != "${IMAGE_STATIC_FLAG}" ]] || return 1
   [[ "${value}" =~ ^flag\{.+\}$ ]] || return 1
+  # 和镜像自带的静态值比 sha256（明文在镜像里，选手能读，不要比明文）。
+  if [[ -r "${STATIC_SHA_FILE}" ]]; then
+    local want got
+    want="$(tr -d '\r\n' < "${STATIC_SHA_FILE}")"
+    got="$(printf '%s' "${value}" | sha256sum | cut -d' ' -f1)"
+    [[ "${got}" != "${want}" ]] || return 1
+  fi
   return 0
 }
 
@@ -431,14 +439,14 @@ wait_for_platform_flag "${FLAG_FILE}" "${FLAG_WAIT_TIMEOUT}" || true
 # ...
 ```
 
-`IMAGE_STATIC_FLAG` 在 Dockerfile 构建时算好写进镜像：
+静态值的 sha256 在 Dockerfile 构建时算好写进镜像：
 
 ```dockerfile
 # 把静态占位值的 sha256 写进镜像，运行期用它判断平台有没有覆盖写。
 RUN printf '%s' "$(cat /flag)" | sha256sum | cut -d' ' -f1 > /opt/static-flag.sha256
 ```
 
-运行期比对 sha256，不要比明文——明文在镜像里，选手能读。
+运行期比 sha256，不要比明文——明文在镜像里，选手能读。没写这个文件的题，`is_platform_flag` 退化成只校验格式，仍然能用。
 
 ### Flag 同步的校验清单
 

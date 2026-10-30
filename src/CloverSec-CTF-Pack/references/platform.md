@@ -59,7 +59,7 @@
 
 **规则 1：镜像里必须有 `/bin/bash`。**
 
-平台是用 `/bin/bash` 执行注入脚本的，不是 `sh`。alpine、slim、distroless、scratch 系镜像默认没有 `/bin/bash`，注入会直接失败，Flag 停在占位值，选手拿到错的 Flag，而平台只在前端提示"环境启动异常"。
+平台是用 `/bin/bash` 执行注入脚本的，不是 `sh`。alpine、distroless、scratch 系镜像默认没有 `/bin/bash`（`*-slim` 是 Debian 系，自带），注入会直接失败，Flag 停在占位值，选手拿到错的 Flag，而平台只在前端提示"环境启动异常"。
 
 - 用 `python:*-alpine`、`node:*-alpine`、`php:*-alpine` 时，Dockerfile 里加 `RUN apk add --no-cache bash`。
 - 用 `ubuntu`、`debian`、`python:*-slim`（bookworm 系）时默认就有，不用加。
@@ -88,7 +88,7 @@ printf '%s\n' "$new_flag" > /flag
 chmod 444 /flag
 ```
 
-目标路径不是 `/flag` 时改最后两行；需要同步到数据库、配置文件、QEMU rootfs 时，在 `printf` 之后接你的同步命令。**不要**在这个脚本里做耗时操作——平台有 30 次重试，但每次失败都会让环境启动变慢。
+目标路径不是 `/flag` 时改最后两行；需要同步到数据库、配置文件、QEMU rootfs 时，在 `printf` 之后接你的同步命令。**不要**在这个脚本里做耗时操作。注意平台的重试只对 MySQL socket 未就绪那一类错误生效（最多 30 次），**缺 bash、权限拒绝这类错误第一次就放弃**，不会重试。
 
 多目标的例子（程序读 `/home/ctf/flag` 且另有配置文件）：
 
@@ -292,7 +292,7 @@ provenance:
 | `service_parity` | 原题每个服务在交付里的落点。原题是 compose 多服务时必填，写清每个组件装进了同一镜像、配置沿用哪个原文件。**服务层被替换过就在这里写清楚，并标 `simplified`** |
 | `simplified` | 相对原题简化了什么。有值必须写清为什么无法等价恢复。没有就写 `[]` |
 | `env_limited` | 本机环境限制，例如 `Apple Silicon 模拟下无法执行原始 rt_sigreturn`。这是环境问题，不是改题的理由 |
-| `verify` | 验证结论：`passed` / `environment_failed` / `incomplete` |
+| `verify` | 验证结论：`passed` / `environment_failed` / `incomplete` / `no_flag_contract`（原题没有 Flag 合同、按构造不可能验证 Flag 时用最后这个） |
 
 规则：
 

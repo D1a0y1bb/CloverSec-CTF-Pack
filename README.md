@@ -214,7 +214,7 @@ provenance:
 
 ### 动态 Flag 必须有 `/bin/bash`
 
-平台的动态 Flag 是**用 `/bin/bash` 执行一段注入脚本**的：出题人在后台填 `flag_script`，平台把它塞进容器叫 `/changeflag.sh`，然后 `/bin/bash /changeflag.sh` 执行，失败重试 30 次。
+平台的动态 Flag 是**用 `/bin/bash` 执行一段注入脚本**的：出题人在后台填 `flag_script`，平台把它塞进容器叫 `/changeflag.sh`，然后 `/bin/bash /changeflag.sh` 执行。只有 MySQL socket 未就绪这类错误会重试（最多 30 次），缺 bash、权限拒绝第一次就放弃。
 
 **镜像里没有 `/bin/bash`，Flag 就写不进去**，而且失败是静默的——选手拿到占位值，平台只提示"环境启动异常"。alpine 系镜像要显式 `RUN apk add --no-cache bash`；distroless / scratch 只能用静态 Flag。
 

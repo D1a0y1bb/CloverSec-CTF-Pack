@@ -2,6 +2,39 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.10 - 2026-10-30
+
+多 Agent 终检（代码正确性 / 文档一致性 / 回归与误报 / 交付可用性）发现的问题。
+
+### 修复
+
+- **静态 Flag 题被误判 `partial`**：`STATIC_FLAG` 到写 Flag 那段才赋值，而手册 1.5 检查在它之前跑，导致所有静态 Flag 题、RDG 无 Flag 合同题走动态分支，报三条假阳性（缺 `$new_flag`、缺读取时机、「写了平台覆盖方式无但没写 mode: static」）。赋值提前到手册检查之前。
+- **根目录 `.DS_Store` 仍判 `failed`**：白名单遍历把 `.DS_Store` 当白名单外条目判死，和「垃圾文件只提醒」打架。白名单遍历现在跳过已知垃圾文件，统一走 JUNK 的提示。
+- **`solve.py` 依赖检查三种误报**：本地模块（`from helper import ...`）、`try/except ImportError` 包住的可选依赖（z3）、文件头已注明 `pip install` 的，全都被判 `failed`。改成 AST 解析并排除这三类，且降为 `hint` 只提示。删掉旧的 grep 正则检查（会误报可选依赖）。
+- **缺 Dockerfile 的容器题被静默当附件题通过**：有 `start.sh` 却漏了 `Dockerfile` 时，原来走附件题分支直接 `passed`。现在报 `failed`。（`challenge.yaml` 不算判据——附件题可以带一个只声明 provenance 的。）
+- **手册串题检查按字节算长度**：`Web`、`Pwn`、`某` 这类短名字会误报。改成按字符算，门槛 4 字符。
+- **PII/凭据扫描漏了 `题目附件/`**：外层门认这个目录，但 `grep` 参数里没列。
+- **「提醒」类检查实际降为 `partial`**：雷同度、垃圾文件、凭据、flag 残留、CDN、首页 404、`start.sh` 写 flag、镜像 tar 不一致、硬链接、附件 0 字节——全部改成 `hint`，只提示不改结论。
+- **Flag 同步等待模板照抄会崩**：`IMAGE_STATIC_FLAG` 从未赋值，`set -u` 直接退出。改成从 `/opt/static-flag.sha256` 读哈希比对，读不到就退化成只校验格式。
+
+### 文档
+
+- 「出题人意愿优先」与「默认恢复原题难度」的冲突：恢复原状不算「改难度」，已注明。
+- `provenance.verify` 的枚举补 `no_flag_contract`（`platform.md`、`SKILL.md`）。
+- SKILL.md 补「附件题手册去掉 1.7、编号顺延」。
+- `env_limited` 该标 `verify: environment_failed`，`status` 保持原判定（原来写的是标 `status: incomplete`）。
+- `alpine、slim、distroless` 那句自相矛盾：slim 是 Debian 系，自带 bash。
+- 平台「30 次重试」的说法改为准确版：只有 MySQL socket 未就绪才重试，缺 bash、权限拒绝第一次就放弃。
+- ttyd 说法统一：端口会被探测，登录可用性要人确认。
+- 自检清单条数（batch.md 的 15 → 逐条）、「其余四处」→「其余五处」。
+- `verify.sh` 里「平台以 root 执行 docker exec」的旧注释改掉（平台 `exec_run` 不传 user，继承镜像 `USER`）。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- 三个 CI 步骤本地全部通过。
+- 实测：静态 Flag 题 `passed`；本地模块 solve `passed`；`try/except` 可选依赖 `passed`；缺 Dockerfile 的容器题 `failed`；根目录 `.DS_Store` 只提示；短题目名不再误报串题。
+
 ## v6.3.9 - 2026-10-30
 
 逐条复核 v6.3.5 ~ v6.3.8 里未经确认的判断，共 34 条，用户逐条表态。结论：33 条保留，1 条改回。
