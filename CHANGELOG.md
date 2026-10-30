@@ -2,6 +2,35 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.8 - 2026-10-30
+
+第四个维度（验证盲区）的复查结果，以及修复 v6.3.7 引入的一个严重 bug。
+
+### 修复
+
+- **v6.3.7 的镜像 tar 一致性检查在 containerd 镜像存储下 100% 误报**。启用 containerd image store 时 `docker save` 出的是 OCI 布局，`manifest.json` 的 `Config` 是 config blob 摘要，而 `docker image inspect` 的 `.Id` 是 manifest 摘要，两者天然不等。本机实测确认（`Driver=overlayfs` 但 tar 是 OCI 布局）。现在先读 `index.json` 的 digest，读不到才退回 `manifest.json`。
+- **不是 `docker save` 产物的 tar 原来静默跳过**，现在报 partial（平台 `docker load` 不进去）。
+- **手册串题检测的单字误匹配**：同批题目名里有个叫「某」的，导致所有手册都报串题。改成按字符长度 ≥4 才参与匹配。
+- **手册 1.5 的 `$new_flag` 检查加了等价例外**：1.5 已经写了 `docker exec` 或 `flag_script` 命令的，只给 hint 不判 partial。
+
+### 新增
+
+- **`verify.sh` 增加 solve 负向对照**。拿完 Flag 后，把 `HOST/PORT` 指向一个确定关着的端口再跑一次，必须失败。真实事故：solve 里有 `docker exec` 兜底、或写死了答案，正向永远通过但平台链路上根本不通。实测能抓到「兜底读容器」的 solve。
+- **手册 1.5 的字段核对**（原来只判「出现过 flag 两个字」）：
+  - 动态 Flag 题：检查有没有含 `$new_flag` 的 flag_script（平台保存题目时校验必填）；检查有没有写「读取时机」。
+  - 静态 Flag 题：1.5 写的原始静态值和 `flag` 文件比对（真实事故：差一个后缀，选手提交不对）。
+  - 1.5 写「平台覆盖方式：无」但 `challenge.yaml` 没写 `flag.mode: static` → partial。
+- **PII/凭据扫描补文件类型**：加 `*.xml *.txt *.html *.log *.ini *.sh *.jsp *.cfg`。真实事故的 8 万条 PII 就在 `Export/temp/*.xml` 里，而原来的 `--include` 列表恰好漏了 xml。
+- **手机号密度检查补 `*.xml *.txt *.log *.xlsx`**，外层门补 `题目附件/`。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- 三个 CI 步骤本地全部通过。
+- 负向对照实测：正常题不误报（`solve: passed`），带 `docker exec` 兜底的 solve 被抓（`solve: failed`）。
+- tar 检查实测：本机 `docker save` 出的 tar，`index.json` 的 digest 与 `.Id` 一致；数信杯 `Web-FastDestruct` 的 tar 与当前构建**确实不一致**（`9feebe76` vs `4bba2a86`）。
+- 真实产物抽检：手册串题误报消除；1.5 字段核对不误报正常题。
+
 ## v6.3.7 - 2026-10-30
 
 第二轮全量复查：4 个子 Agent 按「产物质量 / 平台环境 / 用户诉求 / 验证盲区」四个维度重扫 30 个主会话和 189 个子 Agent 会话，并用真实产物（AI-81-DVLAA 81 题、数信杯决赛 20 题、甘肃电信成品）实跑验证。

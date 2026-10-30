@@ -415,7 +415,7 @@ assert_handbook() {
     OTHER_NAMES=$(for f in "${PROJECT}/../"*/challenge.yaml; do
       [ -f "$f" ] || continue
       sed -nE 's/^[[:space:]]*name:[[:space:]]*["'\'']?([^"'"'"'[:space:]]+).*/\1/p' "$f" | head -1
-    done | grep -vx "$(basename "$PROJECT")" | grep -v '^$' | sort -u)
+    done | grep -vx "$(basename "$PROJECT")" | awk 'length($0) >= 3' | sort -u)
     if [ -n "$OTHER_NAMES" ]; then
       HIT_OTHER=$(printf '%s\n' "$OTHER_NAMES" | while IFS= read -r on; do
         [ -n "$on" ] && grep -qF "$on" "$expected" && echo "$on"
@@ -424,6 +424,42 @@ assert_handbook() {
         stage handbook partial
         partial "手册里出现了同批其他题目的 name：${HIT_OTHER}。确认不是复制粘贴串题"
       fi
+    fi
+  fi
+  # ---- 1.5 的字段核对（不只是"出现过 flag 两个字"）
+  SEC15=$(section_body 1.5 "$expected")
+  if [ -n "$SEC15" ]; then
+    # 动态 Flag 题：1.5 必须贴出含 $new_flag 的 flag_script，否则平台后台存不进去（阻断级）。
+    if [ "${STATIC_FLAG:-0}" = 0 ] && [ -f challenge.yaml ]; then
+      if ! printf '%s' "$SEC15" | grep -q '\$new_flag'; then
+        # 1.5 里已经给了等价的平台写入命令时不算缺——历史题常写 docker exec 形态。
+        if printf '%s' "$SEC15" | grep -qiE 'docker[[:space:]]+exec|flag_script|平台覆盖方式[：:][[:space:]]*[^无]'; then
+          hint "手册 1.5 没贴含 \$new_flag 的 flag_script，给的是 docker exec 等价命令。新题仍建议贴脚本原文，平台后台要的就是那段"
+        else
+          stage handbook partial
+          partial "手册 1.5 里没有含 \$new_flag 的 flag_script，也没有平台写入命令。平台保存题目时校验必须含 \$new_flag，缺了题目存不进去"
+        fi
+      fi
+      if ! printf '%s' "$SEC15" | grep -q '读取时机'; then
+        stage handbook partial
+        partial "手册 1.5 缺「读取时机」。这一条决定平台换 Flag 后生不生效：每次请求读立即生效，启动时读进内存要重启"
+      fi
+    fi
+    # 静态 Flag 题：1.5 写的原始静态值要和仓库 flag 文件对得上。
+    if [ "${STATIC_FLAG:-0}" = 1 ] && [ -f flag ]; then
+      DOC_FLAG=$(printf '%s' "$SEC15" | sed -nE 's/.*原始静态[Ff]lag[：:][[:space:]]*`?([^`[:space:]]+)`?.*/\1/p' | head -1)
+      FILE_FLAG=$(tr -d '\r\n' < flag)
+      if [ -n "$DOC_FLAG" ] && [ -n "$FILE_FLAG" ] && [ "$DOC_FLAG" != "$FILE_FLAG" ]; then
+        stage handbook partial
+        partial "手册 1.5 写的静态 Flag（${DOC_FLAG}）和 flag 文件（${FILE_FLAG}）不一致。真实事故：差一个后缀，选手提交不对"
+      fi
+    fi
+    # 动态/静态声明要和 flag.mode 一致。
+    if printf '%s' "$SEC15" | grep -qE '平台覆盖方式[：:][[:space:]]*无'; then
+      [ "${STATIC_FLAG:-0}" = 0 ] && [ -f challenge.yaml ] && {
+        stage handbook partial
+        partial "手册 1.5 写「平台覆盖方式：无」，但 challenge.yaml 没写 flag.mode: static。两处要一致"
+      }
     fi
   fi
   echo "   手册 $(basename "$expected") ${skeleton}齐全，无待填项"
@@ -700,11 +736,13 @@ fi
 # 真实事故：企业备案题带着 8 万条真实企业 PII（企业名、证件号、手机号、邮箱），
 # 配置文件注释里还有生产库地址和口令。题目发出去等于把客户数据发出了。
 # 只报警告不改结论——正常题目也会有邮箱、内网地址，需要人判断。
-if [ -d src ] || [ -d 附件 ]; then
+if [ -d src ] || [ -d 附件 ] || [ -d 题目附件 ]; then
   PII_HITS=$(grep -rInE \
     --include='*.sql' --include='*.csv' --include='*.json' --include='*.properties' \
     --include='*.yml' --include='*.yaml' --include='*.conf' --include='*.php' \
     --include='*.py' --include='*.java' --include='*.js' --include='*.env' \
+    --include='*.xml' --include='*.txt' --include='*.html' --include='*.log' \
+    --include='*.ini' --include='*.sh' --include='*.jsp' --include='*.cfg' \
     -e '密码[[:space:]]*[:=][[:space:]]*[^[:space:]]{4,}' \
     -e 'password[[:space:]]*[:=][[:space:]]*[^[:space:]]{4,}' \
     -e 'passwd[[:space:]]*[:=]' \
@@ -735,7 +773,9 @@ $(printf '%s\n' "$PII_HITS" | sed 's/^/     /')"
   fi
 
   # 真实 PII：证件号、手机号密度高的数据文件。单条不算，文件里成批出现才报。
-  PII_BULK=$(grep -rIlE '1[3-9][0-9]{9}' --include='*.sql' --include='*.csv' --include='*.json' src 附件 2>/dev/null | head -3)
+  PII_BULK=$(grep -rIlE '1[3-9][0-9]{9}' --include='*.sql' --include='*.csv' --include='*.json' \
+    --include='*.xml' --include='*.txt' --include='*.log' --include='*.xlsx' \
+    src 附件 题目附件 2>/dev/null | head -3)
   if [ -n "$PII_BULK" ]; then
     stage hygiene partial
     partial "这些文件里成批出现手机号形态的数据，确认不是真实客户 PII：$(printf '%s ' $PII_BULK)。真实 PII 必须换成合成数据，并在 provenance 记一笔"
@@ -992,13 +1032,26 @@ if [ -d 镜像 ] || [ -d 题目镜像 ]; then
   CUR_ID=$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null | sed 's/^sha256://')
   for t in "$TAR_DIR"/*.tar; do
     [ -f "$t" ] || continue
-    TAR_CFG=$(tar -xOf "$t" manifest.json 2>/dev/null \
-      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0].get("Config",""))' 2>/dev/null \
-      | sed 's/\.json$//; s/^.*\///')
-    [ -n "$TAR_CFG" ] || continue
+    # 先读 index.json 的 digest —— 启用 containerd 镜像存储（docker info 的 Driver 不是 overlay2）
+    # 时，docker save 出的是 OCI 布局，只有 index.json 的 digest 才等于 image inspect 的 .Id。
+    # manifest.json 里的 Config 是 config blob 摘要，和 .Id 天然不等，拿它比会 100% 误报。
+    TAR_ID=$(tar -xOf "$t" index.json 2>/dev/null \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["manifests"][0]["digest"])' 2>/dev/null \
+      | sed 's/^sha256://')
+    if [ -z "$TAR_ID" ]; then
+      # 退回经典布局：manifest.json 的 Config
+      TAR_ID=$(tar -xOf "$t" manifest.json 2>/dev/null \
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0].get("Config",""))' 2>/dev/null \
+        | sed 's/\.json$//; s/^.*\///')
+    fi
+    if [ -z "$TAR_ID" ]; then
+      # 两个都读不出来：不是 docker save 的产物（rootfs 导出件之类），平台 docker load 不进去。
+      partial "$(basename "$t") 不是 docker save 的产物（读不出 manifest/index），平台 docker load 不进去。确认这个 tar 是怎么生成的"
+      continue
+    fi
     case "$CUR_ID" in
-      "$TAR_CFG"*) ;;
-      *) partial "$(basename "$t") 和当前构建不一致（tar Config ${TAR_CFG:0:12}… vs 当前 ${CUR_ID:0:12}…）。改了 Dockerfile/start.sh/src 之后要重新 docker save，否则平台按 tar 部署时改动不生效" ;;
+      "$TAR_ID"*) ;;
+      *) partial "$(basename "$t") 和当前构建不一致（tar ${TAR_ID:0:12}… vs 当前 ${CUR_ID:0:12}…）。改了 Dockerfile/start.sh/src 之后要重新 docker save，否则平台按 tar 部署时改动不生效" ;;
     esac
   done
 fi
@@ -1317,6 +1370,23 @@ else
       echo "   拿到 Flag"
       stage solve passed
       [ "$SOLVE_SRC" = 0 ] || hint "解题命令拿到了 Flag 但退出码是 ${SOLVE_SRC}，约定成功时返回 0"
+      # 负向对照：指向一个确定关着的端口再解一次，必须失败。
+      # 真实事故：solve 里有 docker exec 兜底、或写死了答案，正向永远通过，
+      # 但平台链路上根本连不通——只有这一步能抓出来。
+      DEAD_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null)
+      if [ -n "$DEAD_PORT" ]; then
+        ( cd "$PROJECT" && env HOST=127.0.0.1 PORT="$DEAD_PORT" sh -c "$SOLVE" ) >"$SOLVELOG.dead" 2>&1 &
+        DEAD_PID=$!; DEAD_T0=$(date +%s)
+        while kill -0 "$DEAD_PID" 2>/dev/null && [ $(( $(date +%s) - DEAD_T0 )) -lt 20 ]; do sleep 1; done
+        kill -9 "$DEAD_PID" 2>/dev/null; wait "$DEAD_PID" 2>/dev/null; DEAD_SRC=$?
+        if grep -qF "$WANT_FLAG" "$SOLVELOG.dead" 2>/dev/null; then
+          stage solve failed
+          fail "solve 在指向一个关着的端口时仍然输出了 Flag（${WANT_FLAG}）。说明它没有走网络：要么有本地文件/docker exec 兜底，要么答案写死在脚本里。改成只能从服务端拿"
+        elif [ "$DEAD_SRC" = 0 ]; then
+          hint "solve 在目标端口关着时仍返回 0，确认它有正确报错（约定拿不到 Flag 要返回非 0）"
+        fi
+        rm -f "$SOLVELOG.dead"
+      fi
       # 换一个 Flag 再解一次。启动时把 Flag 读进内存的题，第一次能过、第二次过不了，
       # 平台换了 Flag 也不会生效——只有这一步能发现。
       if [ "$FLAG_ROTATE" = 1 ] && [ "$STATIC_FLAG" = 0 ] && [ "$NO_FLAG_CONTRACT" = 0 ]; then
