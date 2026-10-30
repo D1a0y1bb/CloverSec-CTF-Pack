@@ -28,8 +28,8 @@ usage() {
                       例如 --run-arg --device=/dev/kvm --run-arg --cap-add=NET_ADMIN
   --timeout N         等待服务开始监听的秒数，默认 60
   --keep              结束后保留容器和镜像，便于进去排查
-  --report PATH       把构建日志、端口结果和阶段结论写成 JSON 报告。默认写到系统临时目录，
-                      路径只要落在交付目录里就拒绝执行，报告不属于交付物。
+  --report PATH       把构建日志、端口结果和阶段结论写成 JSON 报告；不给就不写。
+                      路径只要落在交付目录里就拒绝执行，报告不属于交付物，写到系统临时目录。
 
 退出码：0 passed / 1 failed / 2 参数错误 / 3 partial / 4 environment_failed
   每一阶段都单独给结论，最后汇总成一行：
@@ -83,6 +83,10 @@ done
 # 非数字的 --timeout 会让下面的等待循环永远不超时，先挡住。
 is_num "$START_TIMEOUT" || { echo "failed: --timeout 需要整数秒，收到 '${START_TIMEOUT}'"; exit 2; }
 is_num "$SOLVE_TIMEOUT" || { echo "failed: --solve-timeout 需要整数秒，收到 '${SOLVE_TIMEOUT}'"; exit 2; }
+# 非数字端口会让 listen_state 永远匹配不上，白等到超时才报错，先挡住。
+for p in "${PORTS[@]+"${PORTS[@]}"}"; do
+  is_num "$p" || { echo "failed: --port 需要整数端口，收到 '${p}'"; exit 2; }
+done
 command -v docker >/dev/null || { echo "failed: 找不到 docker"; exit 1; }
 command -v curl >/dev/null || { echo "failed: 找不到 curl"; exit 1; }
 PROJECT=$(cd "$PROJECT" 2>/dev/null && pwd) || { echo "failed: 目录不存在"; exit 2; }
@@ -265,13 +269,26 @@ elif [ -f challenge.yaml ]; then
   YAML_CHECK_PATH=$(sed -nE 's/^[[:space:]]+path:[[:space:]]*["'"'"']?(\.?\/?check\/[^"'"'"'[:space:]]+).*/\1/p' challenge.yaml | head -1)
 fi
 
+# 取某一节的正文（到下一个一至三级标题为止），用于按节检查。
+# 全文 grep 会被别的章节里的同名字段蒙混过去：1.5 没写"平台覆盖方式"但 1.9 提了一句
+# "flag 文件位置"，全文匹配同样能过，空着的 1.5 就没人发现了。
+section_body() { # $1 = 节号，$2 = 手册路径
+  awk -v num="$1" '
+    BEGIN { target = "^#+[[:space:]]*" num "[[:space:]]" }
+    $0 ~ target { inb = 1; next }
+    inb && /^#{1,3}[[:space:]]/ { exit }
+    inb { print }
+  ' "$2"
+}
+
 # 手册检查：文件名、章节骨架、事实字段、启动命令，以及 TODO 残留。
 # 判断部分（1.2/1.4/1.8/1.9）的内容不检查——这个脚本查不出内容真假，
 # 假装能查只会让人把"章节齐全"当成"手册写完"。有 TODO 残留时按 partial 报，
 # 不判 failed（材料确实没有来源时留 TODO 是对的），但也不许再报 passed。
 assert_handbook() {
-  local expected base found=() todo missing=() joined
+  local expected base found=() todo missing=() joined is_container=0
   base=$(basename "$PROJECT")
+  [ -f Dockerfile ] && is_container=1
   shopt -s nullglob
   found=("${PROJECT}/README"/*.md)
   if [ ${#found[@]} -eq 0 ]; then
@@ -295,7 +312,7 @@ assert_handbook() {
   done
   local skeleton="九节"
   if [ ${#missing[@]} -gt 0 ]; then
-    if [ ! -f Dockerfile ] && [ ${#missing[@]} -eq 1 ] && [ "${missing[0]}" = 1.9 ]; then
+    if [ "$is_container" = 0 ] && [ ${#missing[@]} -eq 1 ] && [ "${missing[0]}" = 1.9 ]; then
       skeleton="八节（附件题顺延）"
     else
       stage handbook failed
@@ -304,12 +321,27 @@ assert_handbook() {
     fi
   fi
 
-  # 事实字段：这几项 Skill 有能力查证，缺了就是没写全
-  local fact_missing=()
-  grep -qE '^#+[[:space:]]*1\.5' "$expected" && ! grep -qE '平台覆盖|flag ?文件位置|Flag ?文件' "$expected" \
-    && fact_missing+=("1.5 旗帜信息（平台覆盖方式 / flag 文件位置）")
-  grep -qE '^#+[[:space:]]*1\.6' "$expected" && ! grep -qE '端口|账号|地址' "$expected" \
-    && fact_missing+=("1.6 题目情况（端口 / 账号 / 地址）")
+  # 事实字段：这几项 Skill 有能力查证，缺了就是没写全。
+  # 只在本节正文里找，别让别的章节顺手提到关键词就把空着的节蒙过去。
+  local fact_missing=() sec15 sec16
+  sec15=$(section_body 1.5 "$expected")
+  sec16=$(section_body 1.6 "$expected")
+  # 1.5 的写法按题型不同：容器题写平台覆盖命令和读取时机，静态 Flag 题写「平台覆盖方式：无」，
+  # RDG 无 Flag 合同时写「敏感目标不是 /flag」。所以只要本节写了 flag 这件事就算写了，
+  # 不拿容器题的字段去卡另外两类题。
+  if [ -z "$(printf '%s' "$sec15" | tr -d '[:space:]')" ] \
+     || ! printf '%s' "$sec15" | grep -qiE 'flag|平台覆盖'; then
+    fact_missing+=("1.5 旗帜信息（平台覆盖方式 / flag 文件位置 / 读取时机）")
+  fi
+  # 容器题查端口和账号；附件题没有端口，按 manual.md 只要求写清发了哪些附件，
+  # 所以只要求本节有内容，不要求出现"端口 / 账号 / 地址"这些它本来就没有的字段。
+  if [ "$is_container" = 1 ]; then
+    printf '%s' "$sec16" | grep -qE '端口|账号|地址' \
+      || fact_missing+=("1.6 题目情况（端口 / 账号 / 地址）")
+  else
+    [ -n "$(printf '%s' "$sec16" | tr -d '[:space:]')" ] \
+      || fact_missing+=("1.6 题目情况（发了哪些附件、每个附件是什么）")
+  fi
   if [ ${#fact_missing[@]} -gt 0 ]; then
     stage handbook partial
     partial "手册事实字段不全：${fact_missing[*]}。这几项能从源码和配置读出来，不该缺"
@@ -324,7 +356,7 @@ assert_handbook() {
   # 部署命令里没带 /start.sh 是最常见的漏写，平台就是按这个启动的。
   # 手册里的模板用反斜杠续行写成多行，所以先把续行合并再匹配。
   joined=$(awk '{ if ($0 ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, " "); printf "%s", $0 } else print }' "$expected")
-  if [ -f Dockerfile ] && ! printf '%s\n' "$joined" | grep -qE 'docker run[^`]*start\.sh'; then
+  if [ "$is_container" = 1 ] && ! printf '%s\n' "$joined" | grep -qE 'docker run[^`]*start\.sh'; then
     stage handbook partial
     partial "手册 1.7 的 docker run 命令没带 /start.sh，平台按 /start.sh 启动容器，手册要和平台一致"
     return
@@ -335,7 +367,12 @@ assert_handbook() {
   todo=$(grep -c 'TODO(人工填写)' "$expected" 2>/dev/null); todo=${todo:-0}
   if [ "$todo" -gt 0 ] 2>/dev/null; then
     stage handbook "todo: $todo"
-    partial "手册有 ${todo} 处 TODO(人工填写) 没填（1.2 题目描述、1.4 考察信息、1.8 题目设计、1.9 解题步骤），交付前要么从原始材料搬运整理，要么如实告诉用户哪几节还空着"
+    # 节号按形态给：附件题的题目设计和解题步骤顺延成 1.7、1.8，写死九节的编号会指错节。
+    if [ "$is_container" = 1 ]; then
+      partial "手册有 ${todo} 处 TODO(人工填写) 没填（1.2 题目描述、1.4 考察信息、1.8 题目设计、1.9 解题步骤），交付前要么从原始材料搬运整理，要么如实告诉用户哪几节还空着"
+    else
+      partial "手册有 ${todo} 处 TODO(人工填写) 没填（1.2 题目描述、1.4 考察信息、1.7 题目设计、1.8 解题步骤），交付前要么从原始材料搬运整理，要么如实告诉用户哪几节还空着"
+    fi
     return
   fi
   echo "   手册 $(basename "$expected") ${skeleton}齐全，无待填项"
@@ -415,6 +452,11 @@ if [ -f start.sh ]; then
   fi
   head -n1 start.sh | grep -q '^#!' || { fail "start.sh 第一行没有 #!，平台执行 /start.sh 会报 exec format error"; finish; }
   [ -x start.sh ] || hint "本机的 start.sh 没有执行位。镜像里由 Dockerfile 的 chmod 决定，确认 Dockerfile 里有 chmod 555"
+  # 主服务要成为容器里能跟着退出的那个进程：单服务 exec，多服务后台起主服务再 wait。
+  # 两样都没有时，start.sh 多半是起完服务就结束了，容器会被判成"已退出"或靠 tail -f 假保活。
+  if ! grep -vE '^[[:space:]]*#' start.sh | grep -qE '(^|[[:space:]])(exec|wait)([[:space:]]|$)'; then
+    partial "start.sh 里既没有 exec 也没有 wait，确认主服务是怎么前台运行、退出时容器跟着退出的"
+  fi
   # 只为四叶草平台出的题不需要环境变量兼容段，照抄模板会把别的平台的合同带进交付物。
   if grep -qE 'GZCTF_FLAG|DASFLAG' start.sh; then
     stage hygiene partial
@@ -607,7 +649,13 @@ show_logs() { echo "   ---- docker logs 最后 30 行"; docker logs "$CONTAINER"
 # ---------- 构建
 echo "== 构建镜像 ($PLATFORM)"
 T0=$(date +%s)
-if ! docker build --platform "$PLATFORM" -t "$IMAGE" . >"$BUILDLOG" 2>&1; then
+# 手册 1.7 让用户写的是 docker buildx build，这里跟着用同一条链路，免得本地验证和手册里的构建
+# 走的不是同一套构建器。只有经典构建器时退回 docker build。
+BUILD_CMD=(docker build)
+if docker buildx version >/dev/null 2>&1; then
+  BUILD_CMD=(docker buildx build --load)
+fi
+if ! "${BUILD_CMD[@]}" --platform "$PLATFORM" -t "$IMAGE" . >"$BUILDLOG" 2>&1; then
   echo "   ---- 构建日志最后 40 行"; tail -40 "$BUILDLOG" | sed 's/^/   | /'
   stage build failed; fail "docker build 失败"; finish
 fi
@@ -672,13 +720,18 @@ case "$PID1" in *start.sh*) hint "PID 1 是 start.sh（${PID1}），确认主服
 
 # ---------- 写入测试 Flag：命令和平台一致，以 root 用 sh 重定向写入
 # 以 root 重定向总能写成功，所以"写不进去"不能当判据；先看题目有没有 Flag 合同。
+# 两边都缺才算没有合同：challenge.yaml 没声明 flag.path，镜像里也没有占位 Flag。
+# 只有一边缺时照常跑——缺的那边多半是别的问题，不该在这里当成"没有 Flag 合同"放过去。
+HAS_PLACEHOLDER=0
+if [ -f flag ] || grep -qiE '^[[:space:]]*(COPY|ADD).*flag([[:space:]]|$)' Dockerfile; then
+  HAS_PLACEHOLDER=1
+fi
+HAS_DECLARED=0
+if [ -f "$YAML" ] && { [ -n "$YAML_FLAGPATH" ] || grep -qE '^[[:space:]]*flag:' "$YAML"; }; then
+  HAS_DECLARED=1
+fi
 NO_FLAG_CONTRACT=0
-if [ ! -f "$YAML" ] || { [ -z "$YAML_FLAGPATH" ] && ! grep -qE '^[[:space:]]*flag:' "$YAML"; }; then
-  NO_FLAG_CONTRACT=1
-fi
-if [ ! -f flag ] && ! grep -qiE '^[[:space:]]*(COPY|ADD).*flag([[:space:]]|$)' Dockerfile; then
-  NO_FLAG_CONTRACT=1
-fi
+[ "$HAS_PLACEHOLDER" = 1 ] || [ "$HAS_DECLARED" = 1 ] || NO_FLAG_CONTRACT=1
 
 # 静态 Flag 题：平台不写 Flag，只比对选手提交的字符串，写 Flag 这一步没有意义。
 STATIC_FLAG=0

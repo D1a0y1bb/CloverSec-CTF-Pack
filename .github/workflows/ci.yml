@@ -94,6 +94,124 @@ jobs:
 
           echo "verify.sh regression OK"
 
+      # 容器题路径下能在 docker build 之前给出结论的那几项检查，不需要真的构建镜像。
+      # 覆盖：手册事实字段只在节内匹配、附件题 1.6 不要求端口、start.sh 的 exec/wait、
+      # COPY . 拦截、CRLF、缺 shebang、手册文件名、--port 非数字。
+      - name: verify.sh regression (container static checks)
+        run: |
+          set -euo pipefail
+          V=$PWD/src/CloverSec-CTF-Pack/scripts/verify.sh
+          W=$(mktemp -d)
+          D="$W/Web-fixture"
+          mkdir -p "$D/src" "$D/README"
+          echo '<?php echo 1;' > "$D/src/index.php"
+          # 基础镜像故意写成不存在的名字：静态检查跑完后 docker build 会立刻失败退出，
+          # 这些用例就不会真的去拉镜像、起容器。
+          printf 'FROM ctf-verify-nonexistent:1\nCOPY src/ /var/www/html/\nCOPY flag /flag\n' > "$D/Dockerfile"
+          echo 'flag{placeholder}' > "$D/flag"
+          printf '#!/bin/sh\nexec apache2-foreground\n' > "$D/start.sh"
+          handbook() {
+            echo '# Web-fixture'; echo
+            echo '## 1 题目设计部署信息'; echo
+            for s in 1.1 1.2 1.3 1.4; do echo "### $s 节"; echo 内容; echo; done
+            echo '### 1.5 旗帜信息'; echo '平台覆盖方式：echo "$f" > /flag'; echo 'flag文件位置：/flag'; echo
+            echo '### 1.6 题目情况'; echo 'Web 端口：80'; echo
+            echo '### 1.7 部署方式'; echo '```bash'; echo 'docker run -d -p 8080:80 x /start.sh'; echo '```'; echo
+            echo '### 1.8 题目设计'; echo 内容; echo
+            echo '### 1.9 解题步骤'; echo 内容
+          }
+          handbook > "$D/README/Web-fixture.md"
+
+          # 1. 手册齐全且 start.sh 用 exec → 走到构建，这里只确认前面没误报
+          bash "$V" "$D" >"$W/c1" 2>&1 || true
+          ! grep -qE '事实字段不全|既没有 exec 也没有 wait|手册文件名不对|缺章节' "$W/c1"
+
+          # 2. start.sh 只起服务不收尾 → partial；注释里写了 exec 但没真写，同样算缺失
+          printf '#!/bin/sh\napache2-foreground &\ntail -f /dev/null\n' > "$D/start.sh"
+          bash "$V" "$D" >"$W/c2" 2>&1 || true
+          grep -q '既没有 exec 也没有 wait' "$W/c2"
+          printf '#!/bin/sh\n# exec apache2-foreground\ntail -f /dev/null\n' > "$D/start.sh"
+          bash "$V" "$D" >"$W/c2b" 2>&1 || true
+          grep -q '既没有 exec 也没有 wait' "$W/c2b"
+          printf '#!/bin/sh\nexec apache2-foreground\n' > "$D/start.sh"
+
+          # 3. 1.5 节正文没写，关键词只出现在别节 → 仍判事实字段不全（节内匹配）
+          awk '/^### 1\.5/{print; skip=1; next} /^### 1\.6/{skip=0} !skip' \
+            "$D/README/Web-fixture.md" > "$W/h.md"
+          mv "$W/h.md" "$D/README/Web-fixture.md"
+          printf '\n补充：flag 文件位置与平台覆盖方式见部署一节。\n' >> "$D/README/Web-fixture.md"
+          bash "$V" "$D" >"$W/c3" 2>&1 || true
+          grep -q '1.5 旗帜信息' "$W/c3"
+          handbook > "$D/README/Web-fixture.md"
+
+          # 4. 附件题 1.6 只写附件、不含端口账号地址 → 不算事实字段缺失
+          A="$W/att3"
+          mkdir -p "$A/附件" "$A/solve" "$A/README"
+          echo x > "$A/附件/a.bin"
+          printf 'print("flag{container_static}")\n' > "$A/solve/solve.py"
+          {
+            echo '# att3'; echo
+            echo '## 1 题目设计部署信息'; echo
+            for s in 1.1 1.2 1.3 1.4; do echo "### $s 节"; echo 内容; echo; done
+            echo '### 1.5 旗帜信息'; echo '平台覆盖方式：无'; echo 'flag文件位置：/flag'; echo
+            echo '### 1.6 题目情况'; echo '发给选手的只有一个二进制附件 a.bin'; echo
+            echo '### 1.7 题目设计'; echo 内容; echo
+            echo '### 1.8 解题步骤'; echo 内容
+          } > "$A/README/att3.md"
+          bash "$V" "$A" --expect-flag 'flag{container_static}' >"$W/c4" 2>&1 || true
+          ! grep -q '事实字段不全' "$W/c4"
+
+          # 5. COPY . 判 failed，且在构建之前就停
+          printf 'FROM ctf-verify-nonexistent:1\nCOPY . /var/www/html/\n' > "$D/Dockerfile"
+          bash "$V" "$D" >"$W/c5" 2>&1 || true
+          grep -q 'COPY \. ' "$W/c5"
+          printf 'FROM php:8.2-apache\nCOPY src/ /var/www/html/\nCOPY flag /flag\n' > "$D/Dockerfile"
+
+          # 6. CRLF 与缺 shebang
+          printf '#!/bin/sh\r\nexec apache2-foreground\r\n' > "$D/start.sh"
+          bash "$V" "$D" >"$W/c6" 2>&1 || true
+          grep -q 'CRLF' "$W/c6"
+          printf 'exec apache2-foreground\n' > "$D/start.sh"
+          bash "$V" "$D" >"$W/c7" 2>&1 || true
+          grep -q '第一行没有 #!' "$W/c7"
+          printf '#!/bin/sh\nexec apache2-foreground\n' > "$D/start.sh"
+
+          # 7. 手册文件名不对
+          mv "$D/README/Web-fixture.md" "$D/README/manual.md"
+          bash "$V" "$D" >"$W/c8" 2>&1 || true
+          grep -q '手册文件名不对' "$W/c8"
+          mv "$D/README/manual.md" "$D/README/Web-fixture.md"
+
+          # 8. --port 非数字直接退出码 2，不去等端口
+          if bash "$V" "$D" --port abc >"$W/c9" 2>&1; then
+            echo "non-numeric --port should exit 2"; cat "$W/c9"; exit 1
+          fi
+          grep -q '需要整数端口' "$W/c9"
+
+          echo "verify.sh container static checks OK"
+
+      # VERSION、CHANGELOG 和最近一个 tag 三处版本号必须对得上，否则发布时容易发出错的版本。
+      - name: Version consistency
+        run: |
+          set -euo pipefail
+          V=$(tr -d '[:space:]' < VERSION)
+          HEAD_ENTRY=$(grep -m1 -E '^## v[0-9]' CHANGELOG.md | sed -E 's/^## (v[0-9][^ ]*).*/\1/')
+          test "$V" = "$HEAD_ENTRY" || {
+            echo "VERSION ($V) 和 CHANGELOG 最新版本条目 ($HEAD_ENTRY) 不一致"; exit 1
+          }
+          echo "VERSION 与 CHANGELOG 一致：$V"
+
+      # 打 tag 发布时，tag 名必须和 VERSION 一致，否则 Release 会挂着错的版本号。
+      - name: Release tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          V=$(tr -d '[:space:]' < VERSION)
+          test "refs/tags/$V" = "$GITHUB_REF" || {
+            echo "tag $GITHUB_REF 和 VERSION（$V）不一致"; exit 1
+          }
+          echo "tag 与 VERSION 一致：$V"
+
       # 确认这个目录能被 skills 工具识别为一个合法 Skill。
       - name: Skill discovery
         run: npx -y skills add . --list

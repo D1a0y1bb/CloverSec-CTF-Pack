@@ -3,7 +3,7 @@ name: cloversec-ctf-pack
 description: 把 CTF 题目源码、题目设计或历史题目目录整理成能交付的题目包：容器题的 src/、Dockerfile、start.sh、challenge.yaml 和本地验证，附件题的选手附件，以及两类的 README 手册。用于四叶草安全创研中心出题、迁移旧题、给题目写 Dockerfile 或 start.sh、写题目手册、整理选手附件、排查题目起不来或 Flag 不生效。覆盖 Web、Pwn、AI、Misc 等 20 个题目类型；多服务、Bundle、Scenario、RDG/AWD、Linux-QEMU 见 references/special.md，批量交付见 references/batch.md。
 license: MIT
 compatibility: 需要能读写文件和跑命令的 Agent（Claude Code、Codex 等），本机装 Docker 和 curl。
-allowed-tools: Bash Read Write Edit Glob Grep
+allowed-tools: Bash Read Write Edit Glob Grep Task AskUserQuestion
 metadata:
   short-description: 把题目整理成能交付的题目包，恢复原题难度，并本地验证容器题
 ---
@@ -199,7 +199,7 @@ Crypto-星屑密匣/
 ```
 
 - 附件题不生成 Dockerfile、start.sh、challenge.yaml、flag。provenance 的结论写进交付说明和交付根索引。
-- `last/` 放搬运来源的原始文档（官方题解、出题人设计文档），备查用，不强制。放了就不要改名，下一环要能核对。
+- `last/` 放搬运来源的原始文档（官方题解、出题人设计文档），备查用，不强制。放了就不要改名，下一环要能核对。历史上也有用 `lasted/` 的，这两个名字 `verify.sh` 都放行。
 - Dockerfile 只 `COPY` 具体路径（`src/`、`start.sh`、`flag`），不用 `COPY .`，所以不需要 `.dockerignore`，`solve/`、`README/`、`附件/` 也不会进镜像。
 
 ### 多题交付要分两级
@@ -376,14 +376,14 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 [ ] 8. 附件清单与 README 1.6 写的文件名集合一致（差集为空）
 [ ] 9. challenge.yaml 能被 yaml.safe_load 解析；provenance 的 status/verify 都填了
 [ ] 10. flag.path 逐题打开源码确认是程序实际读的那个，不是套模板
-[ ] 11. Dockerfile：无 COPY .、无 COPY --chmod/--chown、无 --platform=$BUILDPLATFORM；FROM 版本与原题一致
-[ ] 12. start.sh：LF、有 shebang、exec 主进程、没有 GZCTF_FLAG/DASFLAG 之类的别的平台合同
+[ ] 11. Dockerfile：无 COPY .、无 COPY --chmod、无 --platform=$BUILDPLATFORM；FROM 版本与原题一致
+[ ] 12. start.sh：LF、有 shebang、exec 主进程（多服务后台起主服务后 wait）、没有 GZCTF_FLAG/DASFLAG 之类的别的平台合同
 [ ] 13. 端口三处一致：Dockerfile EXPOSE、challenge.yaml expose_ports、手册 1.6/1.7
 [ ] 14. verify.sh 跑到 passed（原始架构上）；跑不动的标 environment_failed 并说明卡在哪
 [ ] 15. 交付说明里逐题列出：难度基线 vs 实际交付、provenance.status、verify 结论、还缺什么
 ```
 
-`verify.sh` 覆盖第 3、4、12、14 条，第 5 条只查文件名、骨架和 TODO，第 9 条只在装了 PyYAML 时查语法；其余靠人读。脚本查不出来的项，别用"verify passed"替代。
+`verify.sh` 覆盖第 3、4 条全部，第 12 条查 LF、shebang、`exec`/`wait` 和别的平台合同，第 14 条查本机能否跑到 `passed`；第 5 条只查文件名、骨架、事实字段和 TODO，不查判断部分写了什么；第 9 条只在装了 PyYAML 时查语法；第 10、11、13 条靠人读，脚本不看。脚本查不出来的项，别用"verify passed"替代。
 
 ## 环境与验证
 

@@ -4,6 +4,30 @@
 
 ## Unreleased
 
+### 修复
+
+- 手册 1.5、1.6 的事实字段改成只在本节正文里匹配。原来是对整份手册 grep，1.5 空着但 1.9 顺口提了一句"flag 文件位置"也能过，空着的节没人发现。
+- 附件题手册的 1.6 不再要求写「端口 / 账号 / 地址」。附件题本来就没有这些字段，按 manual.md 的要求写清附件清单反而被判 `partial`。
+- 附件题手册的 1.5 接受静态 Flag（「平台覆盖方式：无」）和 RDG 无 Flag 合同（敏感目标不是 `/flag`）两种写法，不再拿容器题的字段去卡。
+- 手册有 TODO 时提示的节号按题型给。附件题的题目设计和解题步骤顺延成 1.7、1.8，原来写死成 1.8、1.9。
+- `NO_FLAG_CONTRACT` 改成「challenge.yaml 没声明 **且** 镜像里没有占位 Flag」才成立。原来缺 `challenge.yaml` 就判没有合同，镜像里明明 `COPY flag` 了还提示"镜像里也没有占位 Flag 文件"。
+- `--port` 非数字时直接退出码 2。原来会带着这个值去等端口，白等到超时才报错。
+- `--report` 的帮助文字改成「不给就不写」，和实际行为一致。
+- `start.sh` 静态检查补上 `exec`/`wait`：既没有 `exec` 也没有 `wait` 时报 `partial`，注释里写了不算。
+- `verify.sh` 改用 `docker buildx build --load` 构建，和手册里让用户写的那条命令一致；只有经典构建器时退回 `docker build`。
+
+### 变更
+
+- `SKILL.md` 自检清单第 11 条去掉 `--chown`。`dockerfiles.md` 写明 `COPY --chown` 经典构建器也支持，两处原来互相矛盾。
+- `SKILL.md` 自检清单第 12 条补上「多服务后台起主服务后 wait」，并写清 `verify.sh` 对第 3、4、5、9、12、14 条的实际覆盖范围，第 10、11、13 条靠人读。
+- `allowed-tools` 加回 `Task` 和 `AskUserQuestion`。跳过提问规则要在 Claude Code 里用 AskUserQuestion，批量交付要派子 Agent，原来的列表把这两样排除在外。
+- `SKILL.md` 写明白名单同时接受 `last/` 和 `lasted/`，和 `verify.sh` 一致。
+
+### CI
+
+- 新增容器题静态检查回归 9 项：手册事实字段只在节内匹配、附件题 1.6 不要求端口、`start.sh` 的 `exec`/`wait`、`COPY .` 拦截、CRLF、缺 shebang、手册文件名、`--port` 非数字。
+- 新增 VERSION 与 CHANGELOG 最新条目一致性检查；打 tag 时再检查 tag 名和 VERSION 一致。
+
 ## v6.3.0 - 2026-10-13
 
 ### 变更
