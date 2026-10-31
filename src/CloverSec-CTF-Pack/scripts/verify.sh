@@ -177,7 +177,8 @@ write_report() {
     done
     printf '\n  ]\n}\n'
   } > "$REPORT" 2>/dev/null || {
-    fail "报告写不进去：${REPORT}。确认目录存在，或写到 \$(mktemp -d) 下"
+    # 报告的 IO 错误不该改变题目验证结论，只提示。
+    hint "报告写不进去：${REPORT}。确认目录存在，或写到 \$(mktemp -d) 下"
     rm -f "$REPORT" 2>/dev/null
     return 1
   }
@@ -538,6 +539,14 @@ assert_provenance() {
       fail "provenance.verify 是空的。填 passed / environment_failed / incomplete / no_flag_contract，空着等于没给结论"
       return
     fi
+    # status 写了但 verify 整行缺失：PyYAML 读不到 verify 就拿到空串，上面那个 grep 也匹配不到
+    # 「verify: 空」的形态。单独查：status 非空而 verify 为空，就是缺结论。
+    if [ -n "$YAML_PROV_STATUS" ] && [ -z "$YAML_PROV_VERIFY" ] \
+       && ! grep -qE '^[[:space:]]+verify:[[:space:]]*[^[:space:]]' challenge.yaml; then
+      stage provenance loaded
+      fail "provenance 有 status 但没有 verify。verify 填 passed / environment_failed / incomplete / no_flag_contract，空着等于没给结论"
+      return
+    fi
     # 枚举值之外的值一律不认。"verified""ok"这类自造取值读起来像通过，实际平台和下一环都不认。
     case "$YAML_PROV_STATUS" in
       ""|original_adapter|independent_completion|incomplete) ;;
@@ -658,7 +667,7 @@ fi
 # STATIC_FLAG 要在手册检查之前就算出来：assert_handbook 里的 1.5 核对要按静态/动态分支。
 # 原来它到写 Flag 那一段才赋值，导致所有静态 Flag 题走动态分支，报三条假阳性。
 STATIC_FLAG=0
-case "$YAML_FLAG_MODE" in static) STATIC_FLAG=1;; esac
+case "$(printf '%s' "$YAML_FLAG_MODE" | LC_ALL=C tr '[:upper:]' '[:lower:]')" in static) STATIC_FLAG=1;; esac
 
 echo "== 检查手册"
 assert_handbook
@@ -957,6 +966,14 @@ PYDEP
   fi
 fi
 
+# 递归杀整棵进程树。只 kill 子 shell 的话，真正的解题进程会被 init 收养继续跑。
+# 必须是顶层函数：run_solve 超时分支和负向对照都会用它，函数体内的定义在正常路径下不会生效。
+_killtree() {
+  local pid=$1 sig=$2 child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do _killtree "$child" "$sig"; done
+  kill -"$sig" "$pid" 2>/dev/null
+}
+
 # 跑一次解题命令，带超时。结果写进 SOLVE_SRC，超时时置 SOLVE_TIMED_OUT=1。
 FIRST_HOSTPORT=""; SOLVE_ENV=(); SOLVE_SRC=0; SOLVE_TIMED_OUT=0
 run_solve() {
@@ -974,12 +991,6 @@ run_solve() {
   t0=$(date +%s)
   while kill -0 "$spid" 2>/dev/null && [ $(( $(date +%s) - t0 )) -lt "$SOLVE_TIMEOUT" ]; do sleep 1; done
   if kill -0 "$spid" 2>/dev/null; then
-    # 子 shell + 它启动的一切：先 TERM 再 KILL，递归找子进程。
-    _killtree() {
-      local pid=$1 sig=$2 child
-      for child in $(pgrep -P "$pid" 2>/dev/null); do _killtree "$child" "$sig"; done
-      kill -"$sig" "$pid" 2>/dev/null
-    }
     _killtree "$spid" TERM
     sleep 2
     _killtree "$spid" KILL

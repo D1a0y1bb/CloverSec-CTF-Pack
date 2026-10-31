@@ -2,6 +2,23 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.14 - 2026-10-31
+
+边界与兼容性测试的收尾修复。
+
+### 修复
+
+- **`_killtree` 作用域 bug**：原来定义在 `run_solve` 函数体内，负向对照（dead-port 探测）调用的是全局 `_killtree`，而 solve 正常通过时它从未被定义，导致负向对照的 solve 超时后留下孤儿进程。提为顶层函数。
+- **`flag.mode` 大小写敏感**：`STATIC`、`Static` 被当成动态 Flag 题。改成大小写不敏感（无 PyYAML 兜底也加了 `-i`）。
+- **`provenance` 缺 `verify` 整行不检查**：`status` 有但 `verify:` 行整个缺失时直接 passed。现在判 failed。
+- **`--report` 写失败污染结论**：报告的 IO 错误原来把题目判成 failed。降为提示，不影响题目结论。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- 三个 CI 步骤本地全部通过。
+- 实测：`mode: STATIC` 大写 → passed；缺 verify 行 → failed；报告写失败 → passed + 提示。
+
 ## v6.3.13 - 2026-10-31
 
 用真实产物回归（AI-81 81 题、数信杯 20 题、EXP-23 8 题、甘肃电信 18 题）量化了误报率，修掉 5 处确定性误报 + 按用户决定调整 3 条判定。
