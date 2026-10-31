@@ -2,6 +2,36 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.17 - 2026-10-31
+
+按外部使用反馈做的 7 项改进。
+
+### 新增
+
+- **flag_script 真跑**：verify.sh 从手册 1.5 提取含 `$new_flag` 的代码块，替换成测试 Flag 后在容器里用 `/bin/bash` 跑一遍，再回读 `flag.path`。写错路径或跑不起来判 `partial`。原来只查「出现过 $new_flag」字样，脚本写错也能 passed。
+- **附件压缩包与 src 比对**：附件里的 zip/tar 解包后与 `src/` 同名文件比 SHA256，内容不一致判 `partial`；`src/` 有而包里缺的，同名覆盖 50% 以上才算漏打包，避免误报故意只发部分源码的题。
+- **输出分级**：每条结论带 `blocked` / `fix` / `env` 级别，对应 SKILL 的三档；报告 JSON 的 notes 改成 `{severity, message}` 对象。
+- **AI 题非预期解清单**：自检第 16 条扩成代码执行、文件读取、网络出口三类；special.md 补 pickle / runpy / ctypes / importlib / `__getattribute__` 的绕过自查，结果写进 `solve/bypass.md` 或交付说明。
+- **最小交付骨架**：platform.md 补 start.sh 和 challenge.yaml 的最小可复制模板，新题不用从别的题抄。
+
+### 修复
+
+- **`.DS_Store` 污染 delivery 阶段**：垃圾文件分支残留 `DELIVERY=partial`，阶段行和报告显示 partial 而最终结果 passed，与「记录即可」的三档定义冲突。删掉。
+- **附件里的 `.DS_Store` 判 partial**：0 字节附件检查把 macOS 打包垃圾也算进去。排除 `.DS_Store`、`Thumbs.db`、`__MACOSX/`。
+- **CSS 类名误报 flag 残留**：`.flag{...}`、`.ctf-badge{...}` 被当成 flag 形态。正则加前缀负向条件，排除 `.` 和 `#` 开头的选择器。
+- **original_material 外部引用噪声**：论文、研究文档、artifact 路径不再提示「不在交付目录」。
+
+### 文档
+
+- GZCTF/DASFLAG 段移到 platform.md 附录，减少照抄。
+- 删 SKILL.md 内部两处重复（指标变绿的说明、不成立的问法举例）。
+
+### 验证
+
+- `bash -n`、`shellcheck -S warning` 通过。
+- CI 三个步骤加了新用例：垃圾文件不改结论、报告 notes 带 severity、附件压缩包比对、CSS 不误报。
+- 本机真构建实测：flag_script 正确、路径错、语法错三种场景；附件压缩包四种场景；端到端容器题 passed。
+
 ## v6.3.16 - 2026-10-31
 
 发布后用 4 个子 Agent + DeepSeek 实测暴露的 bug。

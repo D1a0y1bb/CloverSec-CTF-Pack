@@ -44,7 +44,7 @@ metadata:
 
 ### 不许为了让指标变绿去改产物
 
-看到 `partial` / `failed`，先判断是产物有问题还是验证器没覆盖到，再决定改哪边。为了让检查通过去删 Dockerfile 的层、把 `ENTRYPOINT` 改成 `CMD`、把题改简单，这些改的不是题目，是指标。详见「跑 verify.sh」一节。
+看到 `partial` / `failed`，先判断是产物有问题还是验证器没覆盖到，再决定改哪边。具体禁止的操作见「跑 verify.sh」。
 
 ## 默认恢复原题难度
 
@@ -171,9 +171,6 @@ metadata:
 
 出现下面这些，说明还没读材料：
 
-- "这几道题按什么形态交付？"，读目录就知道。
-- "要不要选手附件、要不要镜像 tar？"，原题形态和已有交付物里看得出来。
-- "要不要 RDG 的 check？"，有没有 `check/` 目录一看就知道。
 - "这个漏洞要不要保留？""要不要保持现在的简化版本？"，难度必须保留，没有这个选项。
 - 把 Skill 里已经固定下来的格式拿出来问（章节骨架、目录名规则、注释要求）。
 
@@ -568,7 +565,7 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 [ ] 13. 端口三处一致：Dockerfile EXPOSE、challenge.yaml expose_ports、手册 1.6/1.7
 [ ] 14. 动态 Flag 题：镜像里有 /bin/bash；flag_script 写进手册 1.5
 [ ] 15. verify.sh 跑到 passed（原始架构上）；跑不动的标 environment_failed 并说明卡在哪
-[ ] 16. 非预期解法：默认口令、注册用户、直接访问、报错泄露，逐项试过并处理
+[ ] 16. 非预期解法：按题型枚举更简单的入口并逐项试过。通用四类：默认口令、注册用户、直接访问、报错泄露。代码执行入口：Web 的 eval/反序列化/RCE 链，AI 题的 pickle/runpy/ctypes/importlib/__getattribute__。文件读取：直接读 /flag、路径穿越、静态目录。网络出口：SSRF、容器内直连
 [ ] 17. 六处命名一致：目录名 = challenge.yaml name = README 文件名 = 镜像 tag = tar 名 = start.sh 的 APP_NAME
 [ ] 18. 防护层实测：原题的 WAF / 黑名单 / disable_functions / 鉴权在容器里真的拦得住（附命令和预期）
 [ ] 19. 敏感数据：src/ 和 附件/ 里没有真实 PII、生产库地址、口令、私钥
@@ -581,9 +578,10 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 | 条 | 覆盖程度 |
 |---|---|
 | 3、4 | 白名单外的顶层条目判 `failed`；垃圾文件只提醒；附件 0 字节 / `__MACOSX` 报警 |
+| 附件一致性 | 附件压缩包与 `src/` 同名文件哈希比对，不一致或漏打包判 `partial` |
 | 9 | YAML 语法（需 PyYAML，没装会提示）、provenance 取值枚举（判 failed）；`name` 与目录名一致、`original_material` 路径存在已降为提示，不改结论 |
 | 12 | LF、shebang、`exec`/`wait`、别的平台合同、`start.sh` 写 flag |
-| 14 | 镜像里有没有 `/bin/bash` |
+| 14 | 镜像里有没有 `/bin/bash`；手册 1.5 的 flag_script 提取出来在容器里真跑一遍，写错路径或跑不起来判 `partial` |
 | 15 | 本机能否跑到 `passed` |
 | 19 | 凭据 / 私钥形态，只报警告 |
 | 20 | 硬链接检查 |
@@ -592,6 +590,8 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 | 10、11、13、16、17、18 | 靠人读，脚本不看 |
 
 脚本查不出来的项，别用"verify passed"替代。
+
+非预期解试过的入口和结果，写进交付说明或 `solve/bypass.md`：试了哪些入口、哪个能直接拿 Flag、最后是堵上还是留作设计的一部分。下次改题不用从头再试。
 
 ### 垃圾清理一键命令
 
@@ -767,19 +767,7 @@ chmod 444 /flag
 
 ## 难度等价记录
 
-`provenance` 字段（写进 `challenge.yaml`，见 [references/platform.md](references/platform.md)）：
-
-```yaml
-provenance:
-  status: original_adapter        # original_adapter / independent_completion / incomplete
-  original_material: [源码, install.sql, docker-compose.yml]
-  missing: [原数据库快照]
-  preserved: [漏洞类型=前台 SQL 注入, 链路=3 步, 服务=nginx+php-fpm+MariaDB, PHP=5.6]
-  service_parity: 原 compose 的 nginx / php-fpm / MariaDB 全部装进同一镜像，配置沿用原文件
-  simplified: []                  # 有值必须写清简化了什么、为什么无法等价恢复
-  env_limited: ""
-  verify: passed                  # passed / environment_failed / incomplete / no_flag_contract
-```
+`provenance` 字段写进 `challenge.yaml`（示例见上一节，字段说明见 [references/platform.md](references/platform.md)）。`preserved` 逐题写漏洞类型、链路、服务拓扑和运行时版本；`simplified` 有值必须写清简化了什么、为什么无法等价恢复。
 
 `status` 的含义：
 

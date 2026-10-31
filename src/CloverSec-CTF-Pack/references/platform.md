@@ -4,10 +4,13 @@
 
 - 平台怎么跑题目
 - 动态 Flag 的真实机制（凌虚平台源码还原）
-- 用环境变量传 Flag 的平台
+- 静态 Flag 题（平台不写 Flag）
 - 镜像 tar 的格式
 - Flag 路径与写入方式
 - challenge.yaml 字段
+- provenance：题目来源与恢复状态
+- RDG 相关字段
+- 附录：其他平台的 Flag 传递（四叶草平台不用）
 
 ## 平台怎么跑题目
 
@@ -100,6 +103,39 @@ chown root:ctf /home/ctf/flag && chmod 440 /home/ctf/flag
 printf 'FLAG=%s\n' "$new_flag" > /app/.env
 ```
 
+### 新题的最小骨架
+
+新题从这里开始改，不要从别的题复制，也不要用别的平台的模板。各语言的完整写法见 [dockerfiles.md](dockerfiles.md)。
+
+`start.sh`（所有容器题都要有，平台用它覆盖 `CMD`）：
+
+```bash
+#!/bin/sh
+set -eu
+cd /app
+# exec 让主进程接住 PID 1，平台停容器时信号能传到题目程序。
+exec python3 app.py
+```
+
+`challenge.yaml`（字段说明见「challenge.yaml 字段」一节）：
+
+```yaml
+challenge:
+  name: Web-example
+  category: Web
+  stack: python
+  base_image: python:3.11-slim
+  expose_ports: ["8080"]
+  flag:
+    path: /flag
+    mode: platform
+provenance:
+  status: original_adapter
+  verify: passed
+```
+
+`flag_script` 用上面那段标准模板，贴进手册 1.5 和平台后台。
+
 ### 排障：Flag 写不进去怎么查
 
 按这个顺序查，别猜：
@@ -116,25 +152,6 @@ printf 'FLAG=%s\n' "$new_flag" > /app/.env
 如果程序在启动时读一次 Flag（Python 模块级变量、Java `static` 块、import 时读配置），或者要把 Flag 同步进 QEMU guest，就会拿到占位值或静态旧值。
 
 处理办法见 `special.md` 的「Flag 同步等待」一节。核心是：**等到"平台写入的值"而不是"文件存在"**，判据三条件（内容≠静态值、符合 `flag{.+}`、0.3 秒复核不变），超时 120 秒不阻塞启动。
-
-## 用环境变量传 Flag 的平台
-
-> **只为四叶草平台出的题，这一整节都不要用。** 下面这段代码**不是模板**，是给"确实要在 GZCTF、DASCTF 上跑"的题目用的。**不要复制进交付物。**
->
-> 写出来只是因为以前发生过：Agent 看到这段可复制的代码就抄进了 14 道 Pwn 题的 `start.sh`，用户问「这里面怎么还有 GZCTF_FLAG 这玩意呢」。四叶草平台不走这条路，抄进去只会带进别的平台的合同。
-
-GZCTF、DASCTF 等平台在 `docker run` 时用环境变量传 Flag（`GZCTF_FLAG`、`DASFLAG`、`FLAG`），不会再执行写文件的命令。**只有在确认这道题要交到那几个平台时**，才在 start.sh 开头加：
-
-```bash
-# 仅用于 GZCTF / DASCTF。四叶草平台不要这段。
-FLAG_VALUE="${GZCTF_FLAG:-${DASFLAG:-${FLAG:-}}}"
-if [ -n "$FLAG_VALUE" ]; then
-    printf '%s\n' "$FLAG_VALUE" > /flag
-    unset GZCTF_FLAG DASFLAG FLAG FLAG_VALUE
-fi
-```
-
-`verify.sh` 见到 `start.sh` 里有 `GZCTF_FLAG` / `DASFLAG` 会报 `partial` 提醒核实。
 
 ## 静态 Flag 题（平台不写 Flag）
 
@@ -329,3 +346,20 @@ challenge:
 - **不需要动态 Flag 的 RDG 题**：敏感目标是自己配置里的固定内容时，`flag:` 块可以省掉，或在 `notes` 里注明 Flag 不是判据。check 直接验证那个固定目标还能不能被读到。
 - ttyd 端口写进 `expose_ports`，`verify.sh` 会和 Web 端口一起探测。
 - `notes` 写清 check 覆盖哪些关卡、初始环境的预期结果。
+
+## 附录：其他平台的 Flag 传递（四叶草平台不用）
+
+只在题目确实要交到 GZCTF、DASCTF 时看这一节。四叶草平台的题不要往 `start.sh` 里抄这段，`verify.sh` 见到 `GZCTF_FLAG` / `DASFLAG` 会报 `partial`。
+
+GZCTF、DASCTF 等平台在 `docker run` 时用环境变量传 Flag（`GZCTF_FLAG`、`DASFLAG`、`FLAG`），不执行写文件的命令。确认要交到那几个平台时，才在 `start.sh` 开头加：
+
+```bash
+# 仅用于 GZCTF / DASCTF。四叶草平台不要这段。
+FLAG_VALUE="${GZCTF_FLAG:-${DASFLAG:-${FLAG:-}}}"
+if [ -n "$FLAG_VALUE" ]; then
+    printf '%s\n' "$FLAG_VALUE" > /flag
+    unset GZCTF_FLAG DASFLAG FLAG FLAG_VALUE
+fi
+```
+
+真实事故：Agent 看到这段可复制的代码就抄进了 14 道 Pwn 题的 `start.sh`，用户问「这里面怎么还有 GZCTF_FLAG 这玩意呢」。四叶草平台不走这条路。
