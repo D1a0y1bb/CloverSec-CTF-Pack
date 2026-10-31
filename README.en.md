@@ -200,6 +200,7 @@ For RDG challenges the last stage becomes a check verdict:
 
 | Result | Exit code | Meaning |
 |---|---|---|
+| `argument error` | 2 | A flag is missing or non-numeric (`--port`, `--timeout`, …) |
 | `passed` | 0 | Every check passed |
 | `partial` | 3 | It runs, but some checks did not pass (leftover manual TODOs, a manual `docker run` line without `/start.sh`, no port declared); each one is listed |
 | `failed` | 1 | Build failed, container exited, port bound to 127.0.0.1 only, flag not writable, image lacks `/bin/bash`, image `USER` cannot write the flag, the solver still returned the old flag after rotation, the solver did not get the flag or got it while the port was closed, the manual has the wrong filename, `challenge.yaml` does not parse, the delivery directory has entries outside the whitelist, or an RDG challenge is already fixed from the start |
@@ -294,7 +295,7 @@ src/CloverSec-CTF-Pack/
 ├── SKILL.md              # entry: author intent, difficulty baseline, question rules, output whitelist, workflow, severity, report discipline, pre-delivery checklist, flag, RDG
 ├── agents/openai.yaml    # name, default prompt, question and difficulty guidance for Codex
 ├── references/
-│   ├── manual.md         # per-section manual guidance, the three source tiers, examples
+│   ├── manual.md         # per-section manual guidance, the four source tiers, examples
 │   ├── platform.md       # how the platform starts challenges, static flags, image tar formats, challenge.yaml and provenance
 │   ├── dockerfiles.md    # Dockerfile / start.sh per language, legacy-builder compatibility, version pinning
 │   ├── special.md        # multi-service, Bundle, Scenario, RDG/AWD, Linux-QEMU

@@ -201,6 +201,7 @@ RDG 题的输出换成 check 判定：
 
 | 结果 | 退出码 | 含义 |
 |---|---|---|
+| `参数错误` | 2 | 参数缺失或非数字（`--port`、`--timeout` 等） |
 | `passed` | 0 | 全部检查通过 |
 | `partial` | 3 | 能跑，但有检查项没通过（手册有 TODO、手册的 `docker run` 没带 `/start.sh`、没声明端口等），输出里逐条列出 |
 | `failed` | 1 | 构建失败、容器退出、端口只监听 127.0.0.1、Flag 写不进去、镜像缺 `/bin/bash`、镜像 `USER` 写不进 Flag、换 Flag 后拿到旧值、解题拿不到 Flag 或在断网时仍拿到 Flag、手册文件名不对、`challenge.yaml` 解析失败、交付目录有白名单外条目、RDG 初始环境就是修好的 |
@@ -259,6 +260,7 @@ provenance:
 #!/bin/bash
 set -uo pipefail
 # 平台注入时已把 $new_flag 替换成本实例的动态值。
+# 这里只负责把它写进题目程序真正读取的位置。
 printf '%s\n' "$new_flag" > /flag
 chmod 444 /flag
 ```
@@ -299,7 +301,7 @@ src/CloverSec-CTF-Pack/
 ├── SKILL.md              # 入口：出题人意愿、难度基线、提问规则、交付目录白名单、流程、问题分级、汇报纪律、自检清单、Flag、RDG
 ├── agents/openai.yaml    # Codex 里显示的名称、默认提示词、提问与难度约定
 ├── references/
-│   ├── manual.md         # 手册逐节写法、判断部分的三档来源和范例
+│   ├── manual.md         # 手册逐节写法、判断部分的四档来源和范例
 │   ├── platform.md       # 平台启动方式、静态 Flag、镜像 tar 格式、challenge.yaml 与 provenance
 │   ├── dockerfiles.md    # 各语言 Dockerfile / start.sh 范例、旧构建器兼容、版本锁定
 │   ├── special.md        # 多服务、Bundle、Scenario、RDG/AWD、Linux-QEMU

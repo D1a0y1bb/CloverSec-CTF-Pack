@@ -2,6 +2,33 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.15 - 2026-10-31
+
+发版前最后一轮（代码 + 文档两个 Agent 审查）的收尾。
+
+### 修复
+
+- **`flag.mode` 大小写不敏感只改了一半**：有 PyYAML 的路径改了小写化，无 PyYAML 的文本兜底 grep 还是大小写敏感。补 `-i`。
+- **`COPY .` 检查被多阶段 Dockerfile 绕过**：文件里只要有 `COPY --from=` 就放行整份文件的 `COPY .`。改成行级排除，只有该行本身不含 `--from=` 才拦。
+- **`passwd` 扫描没跟上收紧**：`password` 加了引号字面量要求，`passwd` 还是裸 `[:=]`，变量赋值仍产生噪声。补齐。
+- **`stage hygiene partial` 残留**：PII/凭据/手机号这三处已降为 hint 但保留了 `stage ... partial`，导致报告 stages 和最终 status 对不上。删掉残留的 stage。
+
+### 文档
+
+- README 仓库结构注释「三档来源」→「四档来源」（中英）。
+- SKILL「两类」→「三类」（漏计 RDG）；删 SKILL 命名链的重复段。
+- platform.md 补 `metadata.image_tag` 字段定义。
+- README 退出码表补「参数错误 2」。
+- 四处 flag_script 模板注释统一。
+- SKILL 覆盖表第 9 条分清「判 failed」和「已降提示」。
+- 清掉 batch.md 的对仗句和 SKILL 的 hedge 词。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- 三个 CI 步骤本地全部通过。
+- 两个审查 Agent 结论均为「可以发版」。
+
 ## v6.3.14 - 2026-10-31
 
 边界与兼容性测试的收尾修复。

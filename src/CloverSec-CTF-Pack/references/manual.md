@@ -245,6 +245,8 @@ docker rm -f afterimage
 ```bash
 #!/bin/bash
 set -uo pipefail
+# 平台注入时已把 $new_flag 替换成本实例的动态值。
+# 这里只负责把它写进题目程序真正读取的位置。
 printf '%s\n' "$new_flag" > /flag
 chmod 444 /flag
 ```

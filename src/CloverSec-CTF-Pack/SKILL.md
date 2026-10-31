@@ -1,6 +1,6 @@
 ---
 name: cloversec-ctf-pack
-description: 把 CTF 题目源码、题目设计或历史题目目录整理成能交付的题目包：容器题的 src/、Dockerfile、start.sh、challenge.yaml 和本地验证，附件题的选手附件，以及两类的 README 手册。用于四叶草安全创研中心出题、迁移旧题、给题目写 Dockerfile 或 start.sh、写题目手册、整理选手附件、排查题目起不来或 Flag 不生效。覆盖 Web、Pwn、AI、Misc 等 20 个题目类型；多服务、Bundle、Scenario、RDG/AWD、Linux-QEMU 见 references/special.md，批量交付见 references/batch.md。
+description: 把 CTF 题目源码、题目设计或历史题目目录整理成能交付的题目包：容器题的 src/、Dockerfile、start.sh、challenge.yaml 和本地验证，附件题的选手附件，以及三类的 README 手册。用于四叶草安全创研中心出题、迁移旧题、给题目写 Dockerfile 或 start.sh、写题目手册、整理选手附件、排查题目起不来或 Flag 不生效。覆盖 Web、Pwn、AI、Misc 等 20 个题目类型；多服务、Bundle、Scenario、RDG/AWD、Linux-QEMU 见 references/special.md，批量交付见 references/batch.md。
 license: MIT
 compatibility: 需要能读写文件和跑命令的 Agent（Claude Code、Codex 等），本机装 Docker 和 curl。
 allowed-tools: Bash Read Write Edit Glob Grep Task AskUserQuestion
@@ -211,8 +211,6 @@ Mobile  OSINT  OpposeAI  PPC  Pentest  Pwn  Quantum  RDG  Reverse  Web
 
 这是审计里最高频的问题：目录叫 `Web-FastDestruct`、tar 叫 `phar-fastdestruct.tar`、`challenge.yaml` 里又是第三个名字。平台按 `<题目名>.tar` 找镜像时找不到，一套交付变成两套命名。
 
-镜像 tag 只能用 `[a-z0-9._-]`，所以中文题名要转成拼音或英文短名；转出来的名字写进 `challenge.yaml` 的 `metadata.image_tag`，手册 1.7 用这个 tag。
-
 ## 容器题还是附件题
 
 按下面四条判，**从上往下第一条命中的就是答案**：
@@ -346,7 +344,7 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录> --report "$(mktemp -d)/
 
 ## README/ 手册
 
-手册是交付的一部分，两类题都要写。完整写法和范例见 [references/manual.md](references/manual.md)，写之前先读一遍。
+手册是交付的一部分，三类题都要写。完整写法和范例见 [references/manual.md](references/manual.md)，写之前先读一遍。
 
 **纯附件题去掉 1.7 部署方式、编号顺延**（原 1.8 变 1.7，1.9 变 1.8）。`verify.sh` 认三种：九节齐全、八节顺延（缺 1.9）、去掉 1.7 但保留 1.8/1.9 的编号。不要为了凑九节硬加一个空的 1.7。
 
@@ -386,7 +384,7 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录> --report "$(mktemp -d)/
 - **Web / AI 类容器题的入口页必须是能说明这道题是什么的页面**，不能是 `NOT-FOUND` 纯文本、不能是空白 `index.html`。有官方页面就用官方的，没有就照题目场景做一个像样的。
 - **同一批题目的页面样式要有差异**，同一个框架、同一套 UI 的所有题放在一起，本身就是"批量糊弄"的证据。
 
-`verify.sh --similarity` 会对同批目录的手册做雷同度检查（只报警告，不改结论）。0.6 以上大概率是套模板，逐题确认。
+`verify.sh --similarity` 会对同批目录的手册做雷同度检查（只报警告，不改结论）。0.6 以上就是套模板，逐题确认。
 
 ### 照手册手工复走一遍
 
@@ -583,7 +581,7 @@ bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 | 条 | 覆盖程度 |
 |---|---|
 | 3、4 | 白名单外的顶层条目判 `failed`；垃圾文件只提醒；附件 0 字节 / `__MACOSX` 报警 |
-| 9 | YAML 语法（需 PyYAML，没装会提示）、provenance 取值枚举、`name` 与目录名一致、`original_material` 路径存在 |
+| 9 | YAML 语法（需 PyYAML，没装会提示）、provenance 取值枚举（判 failed）；`name` 与目录名一致、`original_material` 路径存在已降为提示，不改结论 |
 | 12 | LF、shebang、`exec`/`wait`、别的平台合同、`start.sh` 写 flag |
 | 14 | 镜像里有没有 `/bin/bash` |
 | 15 | 本机能否跑到 `passed` |
@@ -710,6 +708,7 @@ Pwn、Linux 内核、依赖堆布局（libc 段地址、heap base、JIT 布局�
 #!/bin/bash
 set -uo pipefail
 # 平台注入时已把 $new_flag 替换成本实例的动态值。
+# 这里只负责把它写进题目程序真正读取的位置。
 printf '%s\n' "$new_flag" > /flag
 chmod 444 /flag
 ```

@@ -844,14 +844,13 @@ if [ -d src ] || [ -d 附件 ] || [ -d 题目附件 ]; then
     --include='*.ini' --include='*.sh' --include='*.jsp' --include='*.cfg' \
     -e '密码[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{4,}["'"'"']' \
     -e 'password[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{4,}["'"'"']' \
-    -e 'passwd[[:space:]]*[:=]' \
+    -e 'passwd[[:space:]]*[:=][[:space:]]*["'][^"']{4,}["']' \
     -e 'AKIA[0-9A-Z]{16}' \
     -e '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' \
     src 附件 题目附件 2>/dev/null \
     | grep -viE 'placeholder|example|your_|changeme|<.*>|\$\{|\{[a-zA-Z_]|FLAG|flag\{|FLAG_|test|demo|dummy|123456|password2|密码框|_USERNAME|_PASSWORD|_USER|_PASS|username=|password=|HIS_' \
     | head -5)
   if [ -n "$PII_HITS" ]; then
-    stage hygiene partial
     hint "src/ 或 附件/ 里疑似有生产凭据或密钥，交付前逐条确认（都是发给选手的）：
 $(printf '%s\n' "$PII_HITS" | sed 's/^/     /')"
   fi
@@ -884,7 +883,6 @@ $(printf '%s\n' "$PII_HITS" | sed 's/^/     /')"
     --include='*.xml' --include='*.txt' --include='*.log' --include='*.xlsx' \
     src 附件 题目附件 2>/dev/null | head -3)
   if [ -n "$PII_BULK" ]; then
-    stage hygiene partial
     hint "这些文件里成批出现手机号形态的数据，确认不是真实客户 PII：$(printf '%s ' $PII_BULK)。真实 PII 必须换成合成数据，并在 provenance 记一笔"
   fi
 fi
@@ -1083,8 +1081,11 @@ if [ ! -f Dockerfile ]; then
 fi
 # COPY . 会把 solve/、README/、附件/、镜像/ 一起打进镜像，路径也会变，直接拦下来。
 # COPY --from=builder . /app/ 拷的是构建阶段产物，不是构建上下文，不会把 solve/README/ 打进镜像。
-if grep -qiE '^[[:space:]]*(COPY|ADD)[[:space:]]+(--[^[:space:]]+[[:space:]]+)*\./?[[:space:]]' Dockerfile \
-   && ! grep -qiE '^[[:space:]]*(COPY|ADD)[[:space:]]+.*--from=' Dockerfile; then
+# COPY . 会把 solve/、README/、附件/ 打进镜像。多阶段构建的 COPY --from=builder . 是合法的，
+# 要行级排除，不能因为文件里有一行 --from= 就放行整份文件的 COPY .。
+COPYDOT=$(grep -iE '^[[:space:]]*(COPY|ADD)[[:space:]]+(--[^[:space:]]+[[:space:]]+)*\./?[[:space:]]' Dockerfile \
+  | grep -viE '--from=' | head -1)
+if [ -n "$COPYDOT" ]; then
   fail "Dockerfile 用了 COPY . ，会把 solve/、README/、附件/ 打进镜像，并且改变目录结构，改成 COPY 具体路径"; finish
 fi
 

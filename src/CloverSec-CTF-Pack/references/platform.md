@@ -239,6 +239,8 @@ challenge:
   category: Web                 # 20 个题目类型之一
   stack: php                    # php / node / python / java / static / pwn
   base_image: php:5.6-apache
+  metadata:
+    image_tag: web-afterimage   # 镜像 tag（中文题名转成拼音/英文短名），手册 1.7 和 start.sh 用它
   workdir: /var/www/html        # 容器内工作目录
   app_src: src                  # 源码在交付目录里的位置
   app_dst: /var/www/html        # 源码 COPY 到容器的目标
