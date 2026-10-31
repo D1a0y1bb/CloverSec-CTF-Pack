@@ -97,6 +97,51 @@ jobs:
           fi
           grep -q '秒没结束' "$W/o7"
 
+          # 8. 垃圾文件只提示，不改 delivery 阶段和最终结论
+          sed -i.bak '/TODO(人工填写)/d' "$D/README/att-fixture.md" && rm -f "$D/README/att-fixture.md.bak"
+          printf 'print("flag{regression_value}")\n' > "$D/solve/solve.py"
+          touch "$D/.DS_Store"
+          bash "$V" "$D" --expect-flag 'flag{regression_value}' --report "$W/r8.json" >"$W/o8" 2>&1
+          grep -q '^== 结果: passed' "$W/o8"
+          grep -q 'delivery: passed' "$W/o8"
+          rm -f "$D/.DS_Store"
+
+          # 9. 报告里的 notes 带 severity 字段
+          python3 -c "import json;d=json.load(open('$W/r3.json'));assert d['notes'] and all(n.get('severity') in ('blocked','fix','env') for n in d['notes'])"
+
+          # 10. 附件压缩包与 src 不一致 → partial；一致 → passed
+          A2="$W/att-archive"
+          mkdir -p "$A2/附件" "$A2/src" "$A2/solve" "$A2/README"
+          printf 'v1\n' > "$A2/src/detector.py"
+          printf 'print("flag{archive_value}")\n' > "$A2/solve/solve.py"
+          {
+            echo '# att-archive'; echo
+            echo '## 1 题目设计部署信息'; echo
+            for s in 1.1 1.2 1.3 1.4; do echo "### $s 节"; echo 内容; echo; done
+            echo '### 1.5 旗帜信息'; echo '平台覆盖方式：无'; echo 'flag文件位置：/flag'; echo
+            echo '### 1.6 题目情况'; echo '发给选手一个压缩包'; echo
+            echo '### 1.7 题目设计'; echo 内容; echo
+            echo '### 1.8 解题步骤'; echo 内容
+          } > "$A2/README/att-archive.md"
+          python3 - "$A2" <<'PY2'
+          import sys, zipfile, os
+          d = sys.argv[1]
+          with zipfile.ZipFile(os.path.join(d, '附件', 'detector.zip'), 'w') as z:
+              z.writestr('detector.py', 'v0\n')
+          PY2
+          if bash "$V" "$A2" --expect-flag 'flag{archive_value}' >"$W/o10" 2>&1; then
+            echo "archive mismatch should be partial"; cat "$W/o10"; exit 1
+          fi
+          grep -q '和 src 不一致' "$W/o10"
+          python3 - "$A2" <<'PY3'
+          import sys, zipfile, os
+          d = sys.argv[1]
+          with zipfile.ZipFile(os.path.join(d, '附件', 'detector.zip'), 'w') as z:
+              z.writestr('detector.py', open(os.path.join(d, 'src', 'detector.py')).read())
+          PY3
+          bash "$V" "$A2" --expect-flag 'flag{archive_value}' >"$W/o11" 2>&1
+          grep -q '^== 结果: passed' "$W/o11"
+
           echo "verify.sh regression OK"
 
       # 容器题路径下能在 docker build 之前给出结论的那几项检查，不需要真的构建镜像。
@@ -192,6 +237,16 @@ jobs:
             echo "non-numeric --port should exit 2"; cat "$W/c9"; exit 1
           fi
           grep -q '需要整数端口' "$W/c9"
+
+          # 9. CSS 类名不算 flag 残留，真 flag 残留仍要报
+          printf 'FROM ctf-verify-nonexistent:1\nCOPY src/ /var/www/html/\nCOPY flag /flag\n' > "$D/Dockerfile"
+          mkdir -p "$D/src/static"
+          printf '.flag{display:flex;gap:8px}\n.ctf-badge{color:red}\n' > "$D/src/static/index.html"
+          bash "$V" "$D" >"$W/c10" 2>&1 || true
+          ! grep -q 'flag 形态' "$W/c10"
+          printf 'var x = "flag{leaked_value}";\n' >> "$D/src/static/index.html"
+          bash "$V" "$D" >"$W/c11" 2>&1 || true
+          grep -q 'flag 形态' "$W/c11"
 
           echo "verify.sh container static checks OK"
 

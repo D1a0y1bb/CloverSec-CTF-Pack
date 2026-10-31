@@ -37,6 +37,7 @@ usage() {
   --timeout N         等待服务开始监听的秒数，默认 60
   --keep              结束后保留容器和镜像，便于进去排查
   --report PATH       把构建日志、端口结果和阶段结论写成 JSON 报告；不给就不写。
+                      报告里的 notes 是 {severity, message} 数组，severity 取 blocked/fix/env。
                       路径只要落在交付目录里就拒绝执行，报告不属于交付物，写到系统临时目录。
 
 退出码：0 passed / 1 failed / 2 参数错误 / 3 partial / 4 environment_failed
@@ -135,13 +136,15 @@ if [ -n "$REPORT" ]; then
 fi
 
 STATUS=passed; NOTES=(); HINTS=(); STAGE=()
-fail()    { STATUS=failed; NOTES+=("$1"); }
-partial() { [ "$STATUS" = passed ] && STATUS=partial; NOTES+=("$1"); }
+# 每条结论带严重级别，对应 SKILL.md 的三档：blocked=阻断、fix=要修、env=环境失败。
+# 不分级的话，`.DS_Store` 和「拿不到 Flag」在报告里长得一样，Agent 容易为了变绿做表面修改。
+fail()    { STATUS=failed; NOTES+=("blocked|$1"); }
+partial() { [ "$STATUS" = passed ] && STATUS=partial; NOTES+=("fix|$1"); }
 # 环境失败不许覆盖真实失败：已经判 failed 的题目，后面再遇到模拟器崩溃也还是 failed，
 # 否则「构建失败 + 模拟器崩溃」会被粉饰成 environment_failed。
 envfail() {
   [ "$STATUS" = failed ] || STATUS=environment_failed
-  NOTES+=("$1")
+  NOTES+=("env|$1")
 }
 hint()    { HINTS+=("$1"); }
 stage() { # 同一阶段重复设置时只保留最后一次结论
@@ -173,7 +176,7 @@ write_report() {
     first=1
     for n in "${NOTES[@]+"${NOTES[@]}"}"; do
       [ "$first" = 1 ] || printf ','
-      printf '\n    "%s"' "$(json_str "$n")"; first=0
+      printf '\n    {"severity": "%s", "message": "%s"}' "$(json_str "${n%%|*}")" "$(json_str "${n#*|}")"; first=0
     done
     printf '\n  ]\n}\n'
   } > "$REPORT" 2>/dev/null || {
@@ -190,7 +193,7 @@ finish() {
   echo
   [ ${#STAGE[@]} -gt 0 ] && echo "== 阶段: ${STAGE[*]}"
   echo "== 结果: $STATUS"
-  for n in "${NOTES[@]+"${NOTES[@]}"}"; do echo "   - $n"; done
+  for n in "${NOTES[@]+"${NOTES[@]}"}"; do echo "   - [${n%%|*}] ${n#*|}"; done
   for h in "${HINTS[@]+"${HINTS[@]}"}"; do echo "   提示: $h"; done
   case "$STATUS" in
     passed) exit 0;;
@@ -337,6 +340,38 @@ section_body() { # $1 = 节号，$2 = 手册路径
   ' "$2"
 }
 
+# 取某一节里含 $new_flag 的围栏代码块，用来真跑手册 1.5 贴的 flag_script。
+# 平台后台保存题目校验的就是这段原文；只在手册里「出现过 $new_flag」不够，
+# 脚本里路径写错、变量名写错，照样能过文字检查，题目上线后 Flag 写不进去。
+section_code_block() { # $1 = 节号，$2 = 手册路径
+  awk -v num="$1" '
+    BEGIN { target = "^#+[[:space:]]*" num "[[:space:]]" }
+    $0 ~ target { inb = 1; next }
+    inb && !fence && /^#{1,3}[[:space:]]/ { exit }
+    inb && /^```/ {
+      if (fence) {
+        fence = 0
+        # 只取第一个含 $new_flag 的块。1.5 里贴了多个示例时，拼接起来执行会互相覆盖。
+        if (!found && block ~ /\$new_flag|\$\{new_flag\}/) { printf "%s", block; found = 1 }
+        block = ""
+      } else { fence = 1; block = "" }
+      next
+    }
+    inb && fence { block = block $0 "\n" }
+    END { exit(found ? 0 : 1) }
+  ' "$2"
+}
+
+# 执行容器内的 flag_script。脚本里等数据库是常见写法，加 60 秒上限，
+# 免得一个死循环把 verify.sh 挂在这里。
+run_flag_script() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 60 docker exec "$CONTAINER" /bin/bash /tmp/verify_changeflag.sh >/dev/null 2>&1
+  else
+    docker exec "$CONTAINER" /bin/bash /tmp/verify_changeflag.sh >/dev/null 2>&1
+  fi
+}
+
 # 手册检查：文件名、章节骨架、事实字段、启动命令，以及 TODO 残留。
 # 判断部分（1.2/1.4/1.8/1.9）的内容不检查——这个脚本查不出内容真假，
 # 假装能查只会让人把"章节齐全"当成"手册写完"。有 TODO 残留时按 partial 报，
@@ -353,6 +388,7 @@ assert_handbook() {
     return
   fi
   expected="${PROJECT}/README/${base}.md"
+  MANUAL_PATH="$expected"
   if [ ! -f "$expected" ]; then
     stage handbook failed
     fail "手册文件名不对。必须是 README/${base}.md，现在是：$(printf '%s ' "${found[@]##*/}")"
@@ -587,8 +623,11 @@ assert_provenance() {
           continue;;
         "VM 资产") continue;;
       esac
-      # 研究文档（pdf/md，带作者括注）只提示，不判缺失。
-      case "$m" in *.pdf|*.PDF) hint "original_material 里的研究文档 ${m} 不在交付目录，这是出题侧引用，不影响交付"; continue;; esac
+      # 出题侧引用（论文、研究文档、artifact）本来就不在交付目录，不属于漏交付，不提示。
+      case "$m" in
+        *.pdf|*.PDF|*.doc|*.docx|*.tex|*.bib|*.ppt|*.pptx|*.md) continue;;
+        artifact/*|artifact|paper/*|paper|*论文*) continue;;
+      esac
       # 只记下不存在的，留给下面统一报
       PROV_MISSING_MATERIAL+=("$m")
     done < <(awk '
@@ -782,8 +821,9 @@ if [ ${#EXTRA[@]} -gt 0 ]; then
   fail "交付目录里有白名单外的条目：${EXTRA[*]}。单个题目录只允许 src/ Dockerfile start.sh challenge.yaml flag README/ solve/，按需加 附件/ 镜像/ last/（RDG 题另有 check/ changeflag.sh ttyd 等）。多出来的要么删掉，要么确认后加进白名单"
 fi
 if [ ${#JUNK[@]} -gt 0 ]; then
-  # .DS_Store / __pycache__ / *.pyc 只提醒，不改结论。
-  [ "$DELIVERY" = passed ] && DELIVERY=partial
+  # .DS_Store / __pycache__ / *.pyc 只提醒，不改结论，也不改 delivery 阶段。
+  # 之前这里顺手写了 DELIVERY=partial，阶段行和报告里显示 partial 而最终结果 passed，
+  # 和 SKILL 里「记录即可」的三档定义对不上，Agent 看到 partial 就去做表面清理。
   hint "交付目录里有垃圾文件：${JUNK[*]}。一条命令清掉：find <交付根> \\( -name .DS_Store -o -name __pycache__ -o -name '*.pyc' \\) -print -delete"
 fi
 if [ "$DELIVERY" = passed ]; then
@@ -791,13 +831,14 @@ if [ "$DELIVERY" = passed ]; then
   HARDLINK=$(find "$PROJECT" -type f -links +1 -print 2>/dev/null | head -5)
   if [ -n "$HARDLINK" ]; then
     DELIVERY=partial
-    DELIVERY=partial; partial "交付目录里有硬链接文件（多包共享同一 inode），单独复制这个包会丢内容。逐个 cp 一遍即可拆开：$(printf '%s ' $HARDLINK)"
+    partial "交付目录里有硬链接文件（多包共享同一 inode），单独复制这个包会丢内容。逐个 cp 一遍即可拆开：$(printf '%s ' $HARDLINK)"
   fi
 fi
 if [ "$DELIVERY" = passed ]; then
   # 选手附件必须是能独立打开的：0 字节、坏 zip、macOS 垃圾都算。
   if [ -d 附件 ]; then
-    EMPTY_ATT=$(find 附件 -type f -size 0 -print 2>/dev/null | head -3)
+    # .DS_Store / __MACOSX 是打包垃圾，不是发给选手的附件，0 字节也不该判 partial。
+    EMPTY_ATT=$(find 附件 -type f -size 0 ! -name '.DS_Store' ! -name 'Thumbs.db' ! -path '*/__MACOSX/*' -print 2>/dev/null | head -3)
     [ -n "$EMPTY_ATT" ] && { DELIVERY=partial; partial "附件里有 0 字节文件：$(printf '%s ' $EMPTY_ATT)，选手拿到也解不了"; }
     MACOS_JUNK=$(find 附件 \( -name '__MACOSX' -o -name '.DS_Store' \) -print 2>/dev/null | head -3)
     [ -n "$MACOS_JUNK" ] && hint "附件里带 macOS 打包垃圾：$(printf '%s ' $MACOS_JUNK)。在 Linux 上重打，或清除后再交付"
@@ -805,6 +846,63 @@ if [ "$DELIVERY" = passed ]; then
 fi
 [ "$DELIVERY" = passed ] && echo "   干净"
 stage delivery "$DELIVERY"
+
+# ---------- 附件压缩包与 src 的一致性
+# 真事故：改了 src 里的检测器，忘了重新打包附件 zip，选手拿到的还是旧版本。
+# 只比对两边都有的同名文件；src 有而包里缺的，仅在覆盖率 >= 50% 时才算漏打包，
+# 避免把「故意只发部分源码」的题误报成漏打包。
+if [ -d src ] && [ -d 附件 ]; then
+  sha_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+    else openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF}'
+    fi
+  }
+  while IFS= read -r archive; do
+    [ -n "$archive" ] || continue
+    case "$archive" in
+      *.zip) command -v unzip >/dev/null 2>&1 || continue ;;
+    esac
+    TMPX=$(mktemp -d "${TMPDIR:-/tmp}/verify-att.XXXXXX")
+    case "$archive" in
+      *.zip) unzip -q "$archive" -d "$TMPX" >/dev/null 2>&1 || { rm -rf "$TMPX"; continue; } ;;
+      *.tar.gz|*.tgz) tar -xzf "$archive" -C "$TMPX" >/dev/null 2>&1 || { rm -rf "$TMPX"; continue; } ;;
+      *.tar) tar -xf "$archive" -C "$TMPX" >/dev/null 2>&1 || { rm -rf "$TMPX"; continue; } ;;
+      *) rm -rf "$TMPX"; continue ;;
+    esac
+    find "$TMPX" -type f -print > "$TMPX.list" 2>/dev/null
+    SRC_TOTAL=0; ATT_MATCH=0; ATT_DIFF=(); ATT_MISS=()
+    while IFS= read -r s; do
+      [ -f "$s" ] || continue
+      SRC_TOTAL=$((SRC_TOTAL + 1))
+      rel=${s#src/}
+      base=${rel##*/}
+      cand=""
+      if [ -f "$TMPX/$rel" ]; then
+        cand="$TMPX/$rel"
+      else
+        # 压缩包常带一层根目录，按 basename 找；同名多个时放弃，留给人判断。
+        cand=$(awk -v b="$base" 'BEGIN{FS="/"} $NF==b { if (f) { m=1 } else f=$0 } END { if (f && !m) print f }' "$TMPX.list" 2>/dev/null)
+      fi
+      if [ -z "$cand" ]; then
+        ATT_MISS+=("$rel")
+        continue
+      fi
+      ATT_MATCH=$((ATT_MATCH + 1))
+      [ "$(sha_of "$s")" = "$(sha_of "$cand")" ] || ATT_DIFF+=("$rel")
+    done < <(find src -type f -print 2>/dev/null)
+    rm -f "$TMPX.list"
+    if [ "$ATT_MATCH" -gt 0 ]; then
+      if [ ${#ATT_DIFF[@]} -gt 0 ]; then
+        partial "附件压缩包 $(basename "$archive") 里有 ${#ATT_DIFF[@]} 个文件和 src 不一致（改了源码忘了重打包？）：$(printf '%s ' "${ATT_DIFF[@]:0:5}")"
+      fi
+      if [ ${#ATT_MISS[@]} -gt 0 ] && [ $((ATT_MATCH * 100 / SRC_TOTAL)) -ge 50 ]; then
+        partial "src 里有 ${#ATT_MISS[@]} 个文件没进附件压缩包 $(basename "$archive")（同名覆盖 $((ATT_MATCH * 100 / SRC_TOTAL))%）：$(printf '%s ' "${ATT_MISS[@]:0:5}")"
+      fi
+    fi
+    rm -rf "$TMPX"
+  done < <(find 附件 -type f \( -name '*.zip' -o -name '*.tar' -o -name '*.tar.gz' -o -name '*.tgz' \) -print 2>/dev/null)
+fi
 
 # ---------- 启动脚本的静态检查
 if [ -f start.sh ]; then
@@ -865,8 +963,8 @@ $(printf '%s\n' "$PII_HITS" | sed 's/^/     /')"
   # 只认 flag/ctf/dasflag 前缀。之前用「任意 token + {」会把内联 CSS（body{…}）、
   # f-string 拼 HTML（n{item}）、SQL 里的 JSON（{"inputType":…}）全当成 flag，516 个纯噪声文件。
   FLAG_RESIDUE=""
-  for f in $(grep -rIlE '(flag|ctf|dasflag)\b[^\n]*\{[^}]{8,}\}' src 附件 题目附件 2>/dev/null | grep -v '\.md$' | head -40); do
-    [ -n "$(grep -oiE '(flag|ctf|dasflag)\b[^\n]*\{[^}]{8,}\}' "$f" 2>/dev/null \
+  for f in $(grep -rIlE '(^|[^.A-Za-z0-9_#-])(flag|ctf|dasflag)[A-Za-z0-9_-]*\{[^}]{8,}\}' src 附件 题目附件 2>/dev/null | grep -v '\.md$' | head -40); do
+    [ -n "$(grep -oiE '(^|[^.A-Za-z0-9_#-])(flag|ctf|dasflag)[A-Za-z0-9_-]*\{[^}]{8,}\}' "$f" 2>/dev/null \
       | grep -viE 'placeholder|not_written|not-written|change_?me|your_|example|dummy|fake|todo|xxxx|flag_placeholder')" ] \
       && FLAG_RESIDUE="$FLAG_RESIDUE $f"
   done
@@ -1291,6 +1389,36 @@ elif [ "$RDG" = 1 ] && [ "$NO_FLAG_CONTRACT" = 1 ]; then
   stage flag_write skipped
 else
   [ -n "$EXPECT_FLAG" ] && hint "--expect-flag 只对附件题和静态 Flag 题生效，平台写 Flag 的题用随机测试 Flag 校验"
+  FLAG_SCRIPT_STATUS=""
+  # 手册 1.5 贴了 flag_script 时，先按平台的方式真跑一遍：/bin/bash 执行、$new_flag 换成测试值。
+  # 平台后台保存的就是这段脚本，只查「出现过 $new_flag」拦不住路径写错、变量名写错。
+  if [ -n "$MANUAL_PATH" ] && [ -f "$MANUAL_PATH" ]; then
+    FLAG_SCRIPT=$(section_code_block 1.5 "$MANUAL_PATH")
+    if [ -n "$FLAG_SCRIPT" ]; then
+      echo "== 执行手册 1.5 的 flag_script（容器内 /bin/bash，模拟平台注入）"
+      FLAG_SCRIPT=$(printf '%s' "$FLAG_SCRIPT" \
+        | sed -e "s|\${new_flag}|${TESTFLAG}|g" -e "s|\$new_flag|${TESTFLAG}|g")
+      TMP_SCRIPT=$(mktemp "${TMPDIR:-/tmp}/verify-changeflag.XXXXXX")
+      printf '%s\n' "$FLAG_SCRIPT" > "$TMP_SCRIPT"
+      if docker cp "$TMP_SCRIPT" "$CONTAINER:/tmp/verify_changeflag.sh" >/dev/null 2>&1 \
+         && run_flag_script; then
+        BACK=$(docker exec -u 0 "$CONTAINER" cat "$FLAGPATH" 2>/dev/null | tr -d '\r\n')
+        if [ "$BACK" = "$TESTFLAG" ]; then
+          echo "   脚本执行成功，回读一致"
+          FLAG_SCRIPT_STATUS=passed
+        else
+          stage flag_write partial
+          partial "手册 1.5 的 flag_script 执行完了，但 ${FLAGPATH} 里不是注入值（回读：${BACK:-空}）。脚本写的路径和 flag.path 对不上，平台上线后选手拿到的是占位值"
+          FLAG_SCRIPT_STATUS=fix
+        fi
+      else
+        stage flag_write partial
+        partial "手册 1.5 的 flag_script 在容器里跑不起来（/bin/bash 执行失败）。平台保存的就是这段脚本，写错题目上线后 Flag 写不进去；下面是回退到直接写入的结果"
+        FLAG_SCRIPT_STATUS=fix
+      fi
+      rm -f "$TMP_SCRIPT"
+    fi
+  fi
   echo "== 写入测试 Flag 到 ${FLAGPATH}"
   if write_flag "$TESTFLAG"; then
     BACK=$(docker exec -u 0 "$CONTAINER" cat "$FLAGPATH" 2>/dev/null | tr -d '\r\n')
@@ -1303,6 +1431,8 @@ else
     else
       echo "   回读一致（${MODE}）"
       stage flag_write passed
+      # 脚本那一步失败过时，阶段结论保持 partial，别被这里的 passed 盖掉。
+      [ "$FLAG_SCRIPT_STATUS" = fix ] && stage flag_write partial
       # 镜像里写了 USER 时，平台注入的那个 exec 会以那个身份执行，写 root 属主的
       # 目标文件会 Permission denied。用 -u 0 写是测不出来的，必须按平台身份再试一次。
       if [ -n "$IMAGE_USER" ]; then

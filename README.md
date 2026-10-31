@@ -171,7 +171,7 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes
 | `--solve-timeout N` | 解题超时秒数，QEMU/LLM 类题调大 |
 | `--keep` | 跑完保留容器和镜像，便于排查 |
 
-除运行之外还会检查：手册文件名/骨架/1.5 字段/同节号重复/串题、`challenge.yaml` 能不能真解析、provenance 取值与 `name` 一致性、交付目录白名单、敏感数据与生产凭据、`src/` 和附件里的 flag 残留、硬链接、`start.sh` 有没有写 flag、首页是不是错误页或占位内容、页面有没有引外网 CDN、`solve.py` 的依赖能不能导入。其中**带"提醒"性质的只打提示、不改结论**。
+除运行之外还会检查：手册文件名/骨架/1.5 字段/同节号重复/串题、1.5 的 flag_script 能不能在容器里用 `/bin/bash` 真跑通、`challenge.yaml` 能不能真解析、provenance 取值与 `name` 一致性、交付目录白名单、敏感数据与生产凭据、`src/` 和附件里的 flag 残留、附件压缩包与 `src/` 的哈希一致性、硬链接、`start.sh` 有没有写 flag、首页是不是错误页或占位内容、页面有没有引外网 CDN、`solve.py` 的依赖能不能导入。输出里每条结论带 `blocked` / `fix` / `env` 分级，报告 JSON 的 notes 用同样的结构。其中**带"提醒"性质的只打提示、不改结论**。
 
 ```text
 == 构建镜像 (linux/amd64)
@@ -203,7 +203,7 @@ RDG 题的输出换成 check 判定：
 |---|---|---|
 | `参数错误` | 2 | 参数缺失或非数字（`--port`、`--timeout` 等） |
 | `passed` | 0 | 全部检查通过 |
-| `partial` | 3 | 能跑，但有检查项没通过（手册有 TODO、手册的 `docker run` 没带 `/start.sh`、没声明端口等），输出里逐条列出 |
+| `partial` | 3 | 能跑，但有检查项没通过（手册有 TODO、手册的 `docker run` 没带 `/start.sh`、没声明端口、附件压缩包和 `src/` 对不上等），输出里逐条列出并标 `fix` |
 | `failed` | 1 | 构建失败、容器退出、端口只监听 127.0.0.1、Flag 写不进去、镜像缺 `/bin/bash`、镜像 `USER` 写不进 Flag、换 Flag 后拿到旧值、解题拿不到 Flag 或在断网时仍拿到 Flag、手册文件名不对、`challenge.yaml` 解析失败、交付目录有白名单外条目、RDG 初始环境就是修好的 |
 | `environment_failed` | 4 | 本机跑不动（amd64 模拟下被调试的二进制崩溃等），题目本身没错。换原生 amd64 重跑 |
 
