@@ -296,11 +296,12 @@ dump("probe_path", "challenge.verification.solve_probe.path", "verification.solv
 dump("name", "challenge.name", "name")
 dump("prov_status", "provenance.status", "challenge.provenance.status")
 dump("prov_verify", "provenance.verify", "challenge.provenance.verify")
+dump("env_limited", "provenance.env_limited", "challenge.provenance.env_limited")
 dump("check_path", "challenge.check.path", "check.path")
 PY
 }
 
-YAML_PORTS=""; YAML_FLAGPATH=""; YAML_PROBE=""; YAML_PROV_STATUS=""; YAML_PROV_VERIFY=""; YAML_CHECK_PATH=""; YAML_FLAG_MODE=""; YAML_NAME=""
+YAML_PORTS=""; YAML_FLAGPATH=""; YAML_PROBE=""; YAML_PROV_STATUS=""; YAML_PROV_VERIFY=""; YAML_CHECK_PATH=""; YAML_FLAG_MODE=""; YAML_NAME=""; YAML_ENV_LIMITED=""
 if [ -f challenge.yaml ] && [ "$HAVE_PYYAML" = 1 ]; then
   while IFS="$(printf '\t')" read -r k v; do
     case "$k" in
@@ -311,6 +312,7 @@ if [ -f challenge.yaml ] && [ "$HAVE_PYYAML" = 1 ]; then
       name) YAML_NAME="$v";;
       prov_status) YAML_PROV_STATUS="$v";;
       prov_verify) YAML_PROV_VERIFY="$v";;
+      env_limited) YAML_ENV_LIMITED="$v";;
       check_path) YAML_CHECK_PATH="$v";;
       flag_mode) YAML_FLAG_MODE="$v";;
     esac
@@ -328,7 +330,9 @@ section_body() { # $1 = 节号，$2 = 手册路径
   awk -v num="$1" '
     BEGIN { target = "^#+[[:space:]]*" num "[[:space:]]" }
     $0 ~ target { inb = 1; next }
-    inb && /^#{1,3}[[:space:]]/ { exit }
+    # 代码块里的 # 注释（如 flag_script 模板的 # 平台注入时…）不是标题，跳过。
+    /^```/ { fence = !fence; if (inb) print; next }
+    inb && !fence && /^#{1,3}[[:space:]]/ { exit }
     inb { print }
   ' "$2"
 }
@@ -633,14 +637,14 @@ if [ ! -f Dockerfile ] && [ ! -f start.sh ] && [ ! -f challenge.yaml ]; then
   if [ -n "$ONLY_TAR" ]; then
     echo "   打包成品：只有镜像 tar $(basename "$ONLY_TAR")（$(du -h "$ONLY_TAR" | cut -f1)）"
     stage delivery skipped
-    hint "这是比赛现场的打包成品，不是出题阶段的交付包。verify.sh 验的是出题阶段的目录结构，对打包成品不适用"
+    partial "这是比赛现场的打包成品，不是出题阶段的交付包，verify.sh 没有验证它。要用它，先 docker load 后手工起容器确认"
     finish
   fi
   if [ -d 题目附件 ] && [ -f 题目手册.md ]; then
     echo "   打包成品：题目附件/ + 题目手册.md"
     echo "   附件 $(ls -1 题目附件 | wc -l | tr -d ' ') 个，手册 $(wc -l < 题目手册.md | tr -d ' ') 行"
     stage delivery skipped
-    hint "这是比赛现场的打包成品。附件题没有可执行验证，确认附件能在干净环境打开即可"
+    partial "这是比赛现场的打包成品，verify.sh 没有验证附件内容。确认附件能在干净环境打开"
     finish
   fi
   # AWD 现场打包形态：题目镜像/ + attachment/ + check.py + source/ + 设计文档 + 手册(带括号)。
@@ -648,7 +652,7 @@ if [ ! -f Dockerfile ] && [ ! -f start.sh ] && [ ! -f challenge.yaml ]; then
   if [ -d 题目镜像 ] || [ -d 题目源码 ] || [ -d 题目手册 ]; then
     echo "   比赛归档：$(ls -d 题目镜像 题目源码 题目手册 2>/dev/null | tr '\n' ' ')"
     stage delivery skipped
-    hint "这是比赛归档形态（镜像/源码/手册分开放），不是出题阶段的交付包。要重新出题时按 SKILL.md 的交付目录结构重组"
+    partial "这是比赛归档形态（镜像/源码/手册分开放），不是出题阶段的交付包，verify.sh 没有验证它"
     finish
   fi
   # 附件题：只有 附件/（或 题目附件/）+ solve/，没有容器
@@ -1084,7 +1088,7 @@ fi
 # COPY . 会把 solve/、README/、附件/ 打进镜像。多阶段构建的 COPY --from=builder . 是合法的，
 # 要行级排除，不能因为文件里有一行 --from= 就放行整份文件的 COPY .。
 COPYDOT=$(grep -iE '^[[:space:]]*(COPY|ADD)[[:space:]]+(--[^[:space:]]+[[:space:]]+)*\./?[[:space:]]' Dockerfile \
-  | grep -viE '--from=' | head -1)
+  | grep -viE -e '--from=' | head -1)
 if [ -n "$COPYDOT" ]; then
   fail "Dockerfile 用了 COPY . ，会把 solve/、README/、附件/ 打进镜像，并且改变目录结构，改成 COPY 具体路径"; finish
 fi
@@ -1341,7 +1345,27 @@ for p in "${PORTS[@]+"${PORTS[@]}"}"; do
   echo "== 探测端口 ${p}（本机 127.0.0.1:${HP}）"
   case "$(listen_state "$p")" in
     loopback) PORTS_OK=0; fail "端口 $p 只监听 127.0.0.1，平台映射后访问不到，改成 0.0.0.0"; continue;;
-    none) PORTS_OK=0; fail "端口 $p 在 ${START_TIMEOUT} 秒内没有开始监听"; show_logs; continue;;
+    none)
+      # 端口现在还没监听，不急着判死。有的题 start.sh 是「等平台写完 flag 再起服务」
+      # （Skill 自己推荐的 Flag 同步等待模式），此时 flag 刚写完，服务可能马上要起。
+      # 再等一小段，给这种题一个机会；还不起才判失败。
+      PORTS_OK=0
+      T0=$(date +%s)
+      while :; do
+        [ "$(listen_state "$p")" = any ] && { PORTS_OK=1; echo "   端口 $p 在写 flag 后开始监听"; break; }
+        [ $(( $(date +%s) - T0 )) -ge 15 ] && break
+        sleep 1
+      done
+      if [ "$PORTS_OK" = 0 ]; then
+        # 出题人在 provenance.env_limited 里已经声明「本机跑不动」时（QEMU guest 起不来、
+        # Apple Silicon TCG 嵌套模拟等），端口起不来是环境问题，不是题目问题。
+        if [ -n "$YAML_ENV_LIMITED" ]; then
+          envfail "端口 $p 没有开始监听，但 provenance.env_limited 已声明本机环境限制（${YAML_ENV_LIMITED}）。这是环境问题，换原生 amd64 重跑，不要当成题目 failed"
+        else
+          fail "端口 $p 在 ${START_TIMEOUT} 秒内没有开始监听"; show_logs
+        fi
+      fi
+      continue;;
     unknown) hint "读不到容器内的监听表，端口 $p 只能从宿主机探测，TCP 结果可能不准";;
   esac
   CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${HP}${PROBE_PATH}" 2>/dev/null)
