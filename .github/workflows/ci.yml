@@ -23,10 +23,275 @@ jobs:
         with:
           node-version: "20"
 
+      # verify.sh 用 yaml.safe_load 真解析 challenge.yaml。没装 PyYAML 时会退回文本匹配，
+      # provenance 枚举校验和 name 一致性检查会静默失效，所以 CI 里显式装上。
+      - name: Setup PyYAML
+        run: python3 -m pip install --quiet pyyaml && python3 -c "import yaml; print('pyyaml', yaml.__version__)"
+
       - name: Shell check
         run: |
           bash -n src/CloverSec-CTF-Pack/scripts/verify.sh
           shellcheck -S warning src/CloverSec-CTF-Pack/scripts/verify.sh
+
+      # 附件题路径不需要构建镜像，用它覆盖不依赖 Docker 的判定：
+      # 八节顺延的附件手册判 passed；--expect-flag 不一致判 failed；手册留 TODO 判 partial；
+      # 内部工作文件判 failed；垃圾文件提示里的反斜杠不能弄坏 JSON 报告；解题卡住要按超时结束。
+      - name: verify.sh regression (attachment fixture)
+        run: |
+          set -euo pipefail
+          V=$PWD/src/CloverSec-CTF-Pack/scripts/verify.sh
+          W=$(mktemp -d)
+          D="$W/att-fixture"
+          mkdir -p "$D/附件" "$D/solve" "$D/README"
+          echo x > "$D/附件/blob.bin"
+          printf 'print("flag{regression_value}")\n' > "$D/solve/solve.py"
+          {
+            echo '# att-fixture'; echo
+            echo '## 1 题目设计部署信息'; echo
+            for s in 1.1 1.2 1.3 1.4; do echo "### $s 节"; echo 内容; echo; done
+            echo '### 1.5 旗帜信息'; echo '平台覆盖方式：无'; echo 'flag文件位置：/flag'; echo
+            echo '### 1.6 题目情况'; echo '端口：无'; echo
+            echo '### 1.7 题目设计'; echo 内容; echo
+            echo '### 1.8 解题步骤'; echo 内容
+          } > "$D/README/att-fixture.md"
+
+          # 1. 八节顺延骨架 + expect 一致 → passed
+          bash "$V" "$D" --expect-flag 'flag{regression_value}' --report "$W/r1.json" >"$W/o1" 2>&1
+          grep -q '^== 结果: passed' "$W/o1"
+
+          # 2. expect 不一致 → failed
+          if bash "$V" "$D" --expect-flag 'flag{wrong_value}' --report "$W/r2.json" >"$W/o2" 2>&1; then
+            echo "expect-flag mismatch should have failed"; cat "$W/o2"; exit 1
+          fi
+          grep -q '与 --expect-flag 不一致' "$W/o2"
+
+          # 3. 手册留 TODO → partial
+          echo 'TODO(人工填写)' >> "$D/README/att-fixture.md"
+          if bash "$V" "$D" --expect-flag 'flag{regression_value}' --report "$W/r3.json" >"$W/o3" 2>&1; then
+            echo "handbook TODO should not pass"; cat "$W/o3"; exit 1
+          fi
+          grep -q 'TODO(人工填写)' "$W/o3"
+
+          # 4. 内部工作文件落在交付根 → failed
+          printf 'notes\n' > "$D/_internal.md"
+          if bash "$V" "$D" --report "$W/r4.json" >"$W/o4" 2>&1; then
+            echo "internal working file should fail"; cat "$W/o4"; exit 1
+          fi
+          grep -q '_internal.md' "$W/o4"
+
+          # 5. 非数字 --timeout 直接退出码 2
+          if bash "$V" "$D" --timeout abc >"$W/o5" 2>&1; then
+            echo "non-numeric --timeout should exit 2"; exit 1
+          fi
+          grep -q '需要整数秒' "$W/o5"
+
+          # 6. 垃圾文件 + --report → 报告仍是合法 JSON
+          rm -f "$D/_internal.md"; touch "$D/附件/.DS_Store"
+          bash "$V" "$D" --report "$W/r6.json" >"$W/o6" 2>&1 || true
+          python3 -m json.tool "$W/r6.json" >/dev/null
+
+          # 7. 解题卡住 → 按 --solve-timeout 结束并判 failed
+          printf 'import time\ntime.sleep(600)\n' > "$D/solve/solve.py"
+          if timeout 60 bash "$V" "$D" --solve-timeout 3 >"$W/o7" 2>&1; then
+            echo "hanging solve should fail"; cat "$W/o7"; exit 1
+          fi
+          grep -q '秒没结束' "$W/o7"
+
+          echo "verify.sh regression OK"
+
+      # 容器题路径下能在 docker build 之前给出结论的那几项检查，不需要真的构建镜像。
+      # 覆盖：手册事实字段只在节内匹配、附件题 1.6 不要求端口、start.sh 的 exec/wait、
+      # COPY . 拦截、CRLF、缺 shebang、手册文件名、--port 非数字。
+      - name: verify.sh regression (container static checks)
+        run: |
+          set -euo pipefail
+          V=$PWD/src/CloverSec-CTF-Pack/scripts/verify.sh
+          W=$(mktemp -d)
+          D="$W/Web-fixture"
+          mkdir -p "$D/src" "$D/README"
+          echo '<?php echo 1;' > "$D/src/index.php"
+          # 基础镜像故意写成不存在的名字：静态检查跑完后 docker build 会立刻失败退出，
+          # 这些用例就不会真的去拉镜像、起容器。
+          printf 'FROM ctf-verify-nonexistent:1\nCOPY src/ /var/www/html/\nCOPY flag /flag\n' > "$D/Dockerfile"
+          echo 'flag{placeholder}' > "$D/flag"
+          printf '#!/bin/sh\nexec apache2-foreground\n' > "$D/start.sh"
+          handbook() {
+            echo '# Web-fixture'; echo
+            echo '## 1 题目设计部署信息'; echo
+            for s in 1.1 1.2 1.3 1.4; do echo "### $s 节"; echo 内容; echo; done
+            echo '### 1.5 旗帜信息'; echo '平台覆盖方式：echo "$f" > /flag'; echo 'flag文件位置：/flag'; echo
+            echo '### 1.6 题目情况'; echo 'Web 端口：80'; echo
+            echo '### 1.7 部署方式'; echo '```bash'; echo 'docker run -d -p 8080:80 x /start.sh'; echo '```'; echo
+            echo '### 1.8 题目设计'; echo 内容; echo
+            echo '### 1.9 解题步骤'; echo 内容
+          }
+          handbook > "$D/README/Web-fixture.md"
+
+          # 1. 手册齐全且 start.sh 用 exec → 走到构建，这里只确认前面没误报
+          bash "$V" "$D" >"$W/c1" 2>&1 || true
+          ! grep -qE '事实字段不全|既没有 exec 也没有 wait|手册文件名不对|缺章节' "$W/c1"
+
+          # 2. start.sh 只起服务不收尾 → partial；注释里写了 exec 但没真写，同样算缺失
+          printf '#!/bin/sh\napache2-foreground &\ntail -f /dev/null\n' > "$D/start.sh"
+          bash "$V" "$D" >"$W/c2" 2>&1 || true
+          grep -q '既没有 exec 也没有 wait' "$W/c2"
+          printf '#!/bin/sh\n# exec apache2-foreground\ntail -f /dev/null\n' > "$D/start.sh"
+          bash "$V" "$D" >"$W/c2b" 2>&1 || true
+          grep -q '既没有 exec 也没有 wait' "$W/c2b"
+          printf '#!/bin/sh\nexec apache2-foreground\n' > "$D/start.sh"
+
+          # 3. 1.5 节正文没写，关键词只出现在别节 → 仍判事实字段不全（节内匹配）
+          awk '/^### 1\.5/{print; skip=1; next} /^### 1\.6/{skip=0} !skip' \
+            "$D/README/Web-fixture.md" > "$W/h.md"
+          mv "$W/h.md" "$D/README/Web-fixture.md"
+          printf '\n补充：flag 文件位置与平台覆盖方式见部署一节。\n' >> "$D/README/Web-fixture.md"
+          bash "$V" "$D" >"$W/c3" 2>&1 || true
+          grep -q '1.5 旗帜信息' "$W/c3"
+          handbook > "$D/README/Web-fixture.md"
+
+          # 4. 附件题 1.6 只写附件、不含端口账号地址 → 不算事实字段缺失
+          A="$W/att3"
+          mkdir -p "$A/附件" "$A/solve" "$A/README"
+          echo x > "$A/附件/a.bin"
+          printf 'print("flag{container_static}")\n' > "$A/solve/solve.py"
+          {
+            echo '# att3'; echo
+            echo '## 1 题目设计部署信息'; echo
+            for s in 1.1 1.2 1.3 1.4; do echo "### $s 节"; echo 内容; echo; done
+            echo '### 1.5 旗帜信息'; echo '平台覆盖方式：无'; echo 'flag文件位置：/flag'; echo
+            echo '### 1.6 题目情况'; echo '发给选手的只有一个二进制附件 a.bin'; echo
+            echo '### 1.7 题目设计'; echo 内容; echo
+            echo '### 1.8 解题步骤'; echo 内容
+          } > "$A/README/att3.md"
+          bash "$V" "$A" --expect-flag 'flag{container_static}' >"$W/c4" 2>&1 || true
+          ! grep -q '事实字段不全' "$W/c4"
+
+          # 5. COPY . 判 failed，且在构建之前就停
+          printf 'FROM ctf-verify-nonexistent:1\nCOPY . /var/www/html/\n' > "$D/Dockerfile"
+          bash "$V" "$D" >"$W/c5" 2>&1 || true
+          grep -q 'COPY \. ' "$W/c5"
+          printf 'FROM php:8.2-apache\nCOPY src/ /var/www/html/\nCOPY flag /flag\n' > "$D/Dockerfile"
+
+          # 6. CRLF 与缺 shebang
+          printf '#!/bin/sh\r\nexec apache2-foreground\r\n' > "$D/start.sh"
+          bash "$V" "$D" >"$W/c6" 2>&1 || true
+          grep -q 'CRLF' "$W/c6"
+          printf 'exec apache2-foreground\n' > "$D/start.sh"
+          bash "$V" "$D" >"$W/c7" 2>&1 || true
+          grep -q '第一行没有 #!' "$W/c7"
+          printf '#!/bin/sh\nexec apache2-foreground\n' > "$D/start.sh"
+
+          # 7. 手册文件名不对
+          mv "$D/README/Web-fixture.md" "$D/README/manual.md"
+          bash "$V" "$D" >"$W/c8" 2>&1 || true
+          grep -q '手册文件名不对' "$W/c8"
+          mv "$D/README/manual.md" "$D/README/Web-fixture.md"
+
+          # 8. --port 非数字直接退出码 2，不去等端口
+          if bash "$V" "$D" --port abc >"$W/c9" 2>&1; then
+            echo "non-numeric --port should exit 2"; cat "$W/c9"; exit 1
+          fi
+          grep -q '需要整数端口' "$W/c9"
+
+          echo "verify.sh container static checks OK"
+
+      # 6.3.5 新增能力的回归：/bin/bash 依赖、QEMU 就绪探针、雷同度、provenance 枚举与命名链、
+      # solve.py 依赖检测、--port 校验。这些都不需要真起容器，靠静态路径就能验。
+      - name: verify.sh regression (6.3.5 additions)
+        run: |
+          set -euo pipefail
+          V=$PWD/src/CloverSec-CTF-Pack/scripts/verify.sh
+          W=$(mktemp -d)
+
+          # 手工拼一个最小附件题，后面的用例都基于它改
+          mk() {
+            local D="$1" name="$2"
+            mkdir -p "$D/附件" "$D/solve" "$D/README"
+            echo x > "$D/附件/a.bin"
+            printf 'print("flag{%s}")\n' "$3" > "$D/solve/solve.py"
+            {
+              echo "# $name"; echo
+              echo '## 1 题目设计部署信息'; echo
+              for s in 1.1 1.2 1.3 1.4; do echo "### $s 节"; echo 内容; echo; done
+              echo '### 1.5 旗帜信息'; echo '平台覆盖方式：无'; echo 'flag文件位置：/flag'; echo
+              echo '### 1.6 题目情况'; echo '发给选手一个二进制附件 a.bin'; echo
+              echo '### 1.7 题目设计'; echo 内容; echo
+              echo '### 1.8 解题步骤'; echo 内容
+            } > "$D/README/$name.md"
+          }
+
+          # a) solve.py 依赖导不进来 → failed
+          D="$W/a"; mk "$D" a dep_check
+          printf 'import definitely_not_installed_zzz\nprint("flag{a}")\n' > "$D/solve/solve.py"
+          bash "$V" "$D" > "$W/a.log" 2>&1 || true
+          grep -q '依赖的模块在本机导不进来' "$W/a.log"
+
+          # b) provenance.status 非法取值 → failed
+          D="$W/b"; mk "$D" b dep_ok
+          printf 'challenge:\n  name: b\n  expose_ports: ["80"]\nprovenance:\n  status: verified\n  verify: ok\n' > "$D/challenge.yaml"
+          bash "$V" "$D" > "$W/b.log" 2>&1 || true
+          grep -q 'provenance.status 取值不合法' "$W/b.log"
+
+          # c) name 与目录名不一致 → 只提示（历史题常用短 id，不判 partial）
+          D="$W/c"; mk "$D" c dep_ok
+          printf 'challenge:\n  name: wrong-name\n  expose_ports: ["80"]\nprovenance:\n  status: original_adapter\n  verify: passed\n' > "$D/challenge.yaml"
+          bash "$V" "$D" > "$W/c.log" 2>&1 || true
+          grep -q '和交付目录名' "$W/c.log"
+
+          # d) original_material 里的路径不在交付目录 → 只提示（上游引用正常）
+          D="$W/d"; mk "$D" d dep_ok
+          printf 'challenge:\n  name: d\n  expose_ports: ["80"]\nprovenance:\n  status: original_adapter\n  original_material: [missing.sql]\n  verify: passed\n' > "$D/challenge.yaml"
+          bash "$V" "$D" > "$W/d.log" 2>&1 || true
+          grep -q '不在交付目录' "$W/d.log"
+
+          # e) --ready-timeout 非数字 → 退出码 2
+          D="$W/e"; mk "$D" e dep_ok
+          if bash "$V" "$D" --ready-timeout xyz > "$W/e.log" 2>&1; then
+            echo "non-numeric --ready-timeout should exit 2"; cat "$W/e.log"; exit 1
+          fi
+          grep -q '需要整数秒' "$W/e.log"
+
+          # f) --similarity 对两份几乎相同的手册报警告（不改结论）
+          mkdir -p "$W/sim"
+          for n in A B; do
+            D="$W/sim/$n"; mk "$D" "$n" sim
+            cat >> "$D/README/$n.md" <<'TXT'
+
+          这道题的场景是一套企业内部的工单系统，选手需要在不具备管理员权限的前提下，
+          通过组合多个接口的越权行为，逐步拿到更高权限，最后读取敏感数据。
+          整个链路依赖对接口权限边界的理解，而不是单一的注入点。
+
+          题目的难点在于理解不同角色之间的数据可见范围，以及服务端是如何校验归属关系的。
+          选手需要先观察正常业务流的参数形态，再构造跨账户的请求，才能命中这个越权点。
+          TXT
+          done
+          bash "$V" "$W/sim/A" --similarity --similarity-report "$W/sim.json" > "$W/f.log" 2>&1 || true
+          grep -q '检查手册雷同度' "$W/f.log"
+          python3 -m json.tool "$W/sim.json" >/dev/null
+
+          echo "verify.sh 6.3.5 additions OK"
+
+                # VERSION、CHANGELOG 和最近一个 tag 三处版本号必须对得上，否则发布时容易发出错的版本。
+      - name: Version consistency
+        run: |
+          set -euo pipefail
+          V=$(tr -d '[:space:]' < VERSION)
+          HEAD_ENTRY=$(grep -m1 -E '^## v[0-9]' CHANGELOG.md | sed -E 's/^## (v[0-9][^ ]*).*/\1/')
+          test "$V" = "$HEAD_ENTRY" || {
+            echo "VERSION ($V) 和 CHANGELOG 最新版本条目 ($HEAD_ENTRY) 不一致"; exit 1
+          }
+          echo "VERSION 与 CHANGELOG 一致：$V"
+
+      # 打 tag 发布时，tag 名必须和 VERSION 一致，否则 Release 会挂着错的版本号。
+      - name: Release tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          V=$(tr -d '[:space:]' < VERSION)
+          test "refs/tags/$V" = "$GITHUB_REF" || {
+            echo "tag $GITHUB_REF 和 VERSION（$V）不一致"; exit 1
+          }
+          echo "tag 与 VERSION 一致：$V"
 
       # 确认这个目录能被 skills 工具识别为一个合法 Skill。
       - name: Skill discovery
