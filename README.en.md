@@ -34,7 +34,7 @@ Give Claude Code or Codex the challenge source, a design note, or an old challen
 - The source, `Dockerfile` and `start.sh` are written from the examples in the skill, with comments that point out the vulnerability and any non-obvious configuration. Comments are in Chinese.
 - **A dynamic-flag image must contain `/bin/bash`**: the platform runs the injected script with `/bin/bash /changeflag.sh`, and alpine / distroless / scratch images lack it, so the flag silently stays at the placeholder. `verify.sh` probes for it after the build.
 - `verify.sh` runs a container challenge the way the platform does: amd64 build, start with `/start.sh`, write a random test flag, probe the ports, and run `solve/solve.py` when present, which must print that flag. It then writes a **second** flag and solves again, which catches services that read the flag into memory at startup. Finally it points the solver at a closed port, where it must fail — that catches solvers that read a local file or use `docker exec` as a fallback.
-- It also checks the manual's filename, skeleton and 1.5 fields, duplicated sections and content copied from another challenge; whether `challenge.yaml` really parses; provenance values and name consistency; the delivery-directory whitelist; secrets and customer PII; leftover flags in `src/` and attachments; whether the image tarball matches the current build; and whether the landing page is an error page or references an external CDN.
+- It also checks the manual's filename, skeleton and 1.5 fields, duplicated sections and content copied from another challenge; whether `challenge.yaml` really parses; provenance values and name consistency; the delivery-directory whitelist; secrets and customer PII; leftover flags in `src/` and attachments; and whether the landing page is an error page or references an external CDN.
 - The manual lives in `README/`. Fact sections are filled in; judgement sections are **carried over from the author's material first**, then from what this delivery actually tested, and only left as `TODO` when no source exists — reported honestly.
 - `solve/`, `附件/` (attachments), `镜像/` (image tarball) and `last/` (original write-ups) sit next to `src/`.
 - For challenges that must stay buildable for years, the references show how to pin image digests, apt snapshots and dependency versions.
@@ -121,11 +121,12 @@ The manual is written to `README/<type>-<name>.md`, named exactly like the chall
 | 1.8 Design | **carry over first** | needs the design rationale |
 | 1.9 Solution steps | **carry over first** | needs the chain actually walked through |
 
-Judgement sections are filled from three tiers, in order:
+Judgement sections are filled from four tiers, in order:
 
 1. **The author's material** (competition archive, author's delivery bundle, official write-up, design notes in the old directory) — carry it across and tidy it up. No TODO.
 2. **External write-ups and team reports** are leads only. Before any of it goes into the manual it must be re-run against *this* delivery: injection points, parameter shapes, trigger order and tool installs are often wrong for the challenge at hand.
-3. **No source at all** — write `TODO(人工填写)` in the section body and name the empty sections in the delivery note.
+3. **The chain this delivery actually walked** — when the solver genuinely worked, the injection point, payload and trigger order you verified are a reliable source for 1.8/1.9. Only write what you actually ran.
+4. **No source at all** — write `TODO(人工填写)` in the section body and name the empty sections in the delivery note.
 
 **Never invent.** A sentence like "tests web request analysis and server-side input handling" reads like content but says nothing, and it hides the gap.
 
@@ -167,7 +168,7 @@ Other useful flags:
 | `--solve-timeout N` | Solver timeout; raise it for QEMU / LLM challenges |
 | `--keep` | Keep the container and image afterwards |
 
-Beyond running the challenge it also checks: the manual's filename, skeleton, 1.5 fields, duplicated sections and content borrowed from another challenge; whether `challenge.yaml` really parses; provenance values and name consistency; the delivery whitelist; secrets and customer PII; leftover flags in `src/` and attachments; whether the image tarball matches the current build; hard links; whether `start.sh` writes the flag; whether the landing page is an error page or a placeholder; whether the page pulls from an external CDN; and whether `solve.py`'s imports resolve. Checks described as **hints** print a notice and do not change the verdict.
+Beyond running the challenge it also checks: the manual's filename, skeleton, 1.5 fields, duplicated sections and content borrowed from another challenge; whether `challenge.yaml` really parses; provenance values and name consistency; the delivery whitelist; secrets and customer PII; leftover flags in `src/` and attachments; hard links; whether `start.sh` writes the flag; whether the landing page is an error page or a placeholder; whether the page pulls from an external CDN; and whether `solve.py`'s imports resolve. Checks described as **hints** print a notice and do not change the verdict.
 
 Challenges needing KVM or extra network capabilities get them via `--run-arg --device=/dev/kvm`. Attachment challenges have no test flag, so assert the solved value with `--expect-flag '<the value from manual 1.5>'`; static-flag challenges must produce the value baked into the image.
 
@@ -193,7 +194,7 @@ Challenges needing KVM or extra network capabilities get them via `--run-arg --d
 For RDG challenges the last stage becomes a check verdict:
 
 ```text
-== 阶段: handbook: passed provenance: passed delivery: passed build: passed startup: passed flag_write: skipped dynflag_bash: skipped port: passed check_initial: ok: False
+== 阶段: handbook: passed provenance: passed delivery: passed build: passed startup: passed flag_write: skipped port: passed check_initial: ok: False
 == 结果: passed
 ```
 
@@ -290,7 +291,7 @@ Read the flag file on every request. If it is read once at startup and cached (a
 
 ```text
 src/CloverSec-CTF-Pack/
-├── SKILL.md              # entry: difficulty baseline, question rules, output whitelist, workflow, pre-delivery checklist, flag, RDG
+├── SKILL.md              # entry: author intent, difficulty baseline, question rules, output whitelist, workflow, severity, report discipline, pre-delivery checklist, flag, RDG
 ├── agents/openai.yaml    # name, default prompt, question and difficulty guidance for Codex
 ├── references/
 │   ├── manual.md         # per-section manual guidance, the three source tiers, examples

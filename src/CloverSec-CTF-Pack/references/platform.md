@@ -73,7 +73,7 @@ Skill 不生成 `changeflag.sh` 交付文件（旧平台 helper 除外，见 `sp
 
 **规则 3：动态值不是随机的。**
 
-`flag{md5(静态flag + 用户id + 容器short_id)}`。同一用户重开同一容器会得到同一个 Flag。所以不要用"每次不同"来判断动态 Flag 是否生效——用"和镜像里的占位值不同"来判断。
+`flag{md5(静态flag + 用户id + 容器short_id)}`。同一用户重开同一容器会得到同一个 Flag。所以不要用"每次不同"来判断动态 Flag 是否生效，用"和镜像里的占位值不同"来判断。
 
 ### flag_script 标准模板
 
@@ -152,7 +152,7 @@ challenge:
 - 镜像里放的静态 Flag 就是完整的那一个值，`chmod 444`。
 - 手册 1.5 要写「平台覆盖方式：无，本题为静态 Flag，平台不写 Flag，只比对选手提交的字符串」，并写明这个值是从哪里考证来的。
 - **多小问拼成一个完整 Flag**时，按小问顺序取各段的 `{}` 内容、用下划线连接，外层只留一层 `flag{}`。例：小问一 `flag{aaa}`、小问二 `flag{bbb}` → `flag{aaa_bbb}`。
-- 多出来的小问占位文件放在 `src/flags/` 下再 `COPY`，不要直接在题目录根上放 `flag1`、`flag2`——交付目录白名单只认 `flag`，多出来的会在 `verify.sh` 里报成多余文件。
+- 多出来的小问占位文件放在 `src/flags/` 下再 `COPY`，不要直接在题目录根上放 `flag1`、`flag2`。交付目录白名单只认 `flag`，多出来的会在 `verify.sh` 里报成多余文件。
 - `verify.sh` 见到 `mode: static` 会把 `flag_write` 记成 `skipped`，解题输出里必须出现镜像里 `flag.path` 的那个值，也可以用 `--expect-flag '<手册 1.5 里的值>'` 指定。附件题同样用 `--expect-flag` 断言。
 
 ## 镜像 tar 的格式
@@ -183,7 +183,7 @@ docker save afterimage:latest -o 残影.tar
 
 路径填错，平台写入的 Flag 程序读不到。
 
-**迁移旧平台题（GZCTF、CTFd 等）时，`flag.path` 必须逐题判定，不许按题型或按批次一刀切填 `/flag`。** 用户选了一个全局方案也要逐题覆盖——Pwn 题的 `/home/ctf/flag`、PHP 嵌入题的 `/var/www/html/flag.php` 都有各自的理由。
+**迁移旧平台题（GZCTF、CTFd 等）时，`flag.path` 必须逐题判定，不许按题型或按批次一刀切填 `/flag`。** 用户选了一个全局方案也要逐题覆盖，Pwn 题的 `/home/ctf/flag`、PHP 嵌入题的 `/var/www/html/flag.php` 都有各自的理由。
 
 ### 直接写文件
 
@@ -227,7 +227,7 @@ def get_flag():
     return open("/flag").read()
 ```
 
-Java 的 `static { flag = readFile(); }` 同理。fork 型服务（`ForkingMixIn`、`os.fork()`）里，子进程继承的是父进程启动时读到的值，所以模块级读 Flag 的题同样会失效——要改成每次请求读，或者让子进程自己读文件。
+Java 的 `static { flag = readFile(); }` 同理。fork 型服务（`ForkingMixIn`、`os.fork()`）里，子进程继承的是父进程启动时读到的值，所以模块级读 Flag 的题同样会失效，要改成每次请求读，或者让子进程自己读文件。
 
 `verify.sh` 会写入第一个测试 Flag 并解一次，再写入第二个测试 Flag 再解一次；两次都拿到对应的值才算通过。每次写入后最多等 15 秒，一直拿到旧值的题判 `failed`。
 
@@ -235,7 +235,7 @@ Java 的 `static { flag = readFile(); }` 同理。fork 型服务（`ForkingMixIn
 
 ```yaml
 challenge:
-  name: afterimage              # 题目标识，kebab-case
+  name: Web-afterimage          # 等于交付目录名（主名），不是 kebab-case
   category: Web                 # 20 个题目类型之一
   stack: php                    # php / node / python / java / static / pwn
   base_image: php:5.6-apache
@@ -268,7 +268,7 @@ provenance:
 
 不知道的字段不写，填错比不填更麻烦。verify.sh 用 `yaml.safe_load` 真解析这个文件：
 
-- 解析失败直接判 `failed`——平台的解析器读不出来，题目就上不了线。flow 序列里带 `{{flag}}`、缩进用 Tab、冒号后面缺空格都会让它挂掉。
+- 解析失败直接判 `failed`，平台的解析器读不出来，题目就上不了线。flow 序列里带 `{{flag}}`、缩进用 Tab、冒号后面缺空格都会让它挂掉。
 - `expose_ports` 读来自动探测端口，两种写法都支持：
 
   ```yaml

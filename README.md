@@ -29,12 +29,12 @@
 把题目源码、一段题目设计或者一个旧题目录交给 Claude Code / Codex，整理成能交付的题目包：容器题给出可构建的镜像目录并本地验证，附件题给出整理好的选手附件，RDG 防守题给出带判题脚本的加固环境，三类都带手册。
 
 - **出题人意愿优先**：这个 Skill 是给作者打工的，不是替作者做主的。改判定结果、改交付物、在多个方案里选、删改已有内容、自己拿不准的，动手前先说清"打算改什么、为什么、会影响什么"，等确认再做。作者说"无所谓"就保持现状。能查证的事实（代码、平台、文件）自己查，不要拿去问。
-- **默认恢复原题难度**：开工第一步写难度基线（漏洞类型、链路、服务拓扑、运行时版本），默认原样恢复——这一步不用问。相对原题的降级、升级、简化才算改难度，必须先问过用户。
+- **默认恢复原题难度**：开工第一步写难度基线（漏洞类型、链路、服务拓扑、运行时版本），默认原样恢复，这一步不用问。相对原题的降级、升级、简化才算改难度，必须先问过用户。
 - 交付目录按 `题目类型-题目名称` 命名，类型取 Web、Pwn、Crypto、AI 等 20 种；多题交付分 `容器题/` 与 `附件题/` 两级。
 - 源码、`Dockerfile`、`start.sh` 按内置范例编写，带中文注释，讲清漏洞点和不明显的配置。
 - **动态 Flag 题镜像里必须有 `/bin/bash`**：平台用 `/bin/bash /changeflag.sh` 执行注入脚本，alpine / distroless / scratch 缺 bash 就静默失败，Flag 停在占位值。`verify.sh` 会构建后探测。
 - 容器题用 `verify.sh` 按平台的方式跑一遍：amd64 构建、`/start.sh` 启动、写入随机测试 Flag、探测端口，有 `solve/solve.py` 就运行它，必须拿到这个 Flag；再换一个 Flag 解第二次，抓"启动时把 Flag 读进内存"的题；再指向一个关着的端口跑一次，必须失败，抓"读本地文件/docker exec 兜底"的假解题。
-- 还会检查：手册文件名/骨架/1.5 字段/串题、`challenge.yaml` 真解析、provenance 取值与命名一致、交付目录白名单、敏感数据与凭据、镜像 tar 与当前构建是否一致、`src/` 里有没有 flag 残留、首页是不是 `NOT-FOUND`、页面有没有引外网 CDN。
+- 还会检查：手册文件名/骨架/1.5 字段/串题、`challenge.yaml` 真解析、provenance 取值与命名一致、交付目录白名单、敏感数据与凭据、`src/` 里有没有 flag 残留、首页是不是 `NOT-FOUND`、页面有没有引外网 CDN。
 - 手册写在 `README/`：事实部分填全，判断部分**优先从出题人材料搬运**，其次是本次实测链路，只有确实没有来源才留 `TODO` 并如实报告。
 - `solve/`、`附件/`、`镜像/`、`last/` 都放在和 `src/` 同级的目录。
 - 需要长期存档的题，按参考文档锁定镜像 digest、apt 源和依赖版本，上游更新后照样能 build。
@@ -71,7 +71,7 @@ npx skills add D1a0y1bb/CloverSec-CTF-Pack -g -a claude-code -a codex
 Flask 写的 SSTI，flag 放 /flag，端口 5000。
 ```
 
-材料可以是题目设计、只有源码的目录，或者带旧 Dockerfile 的历史题目。它先把材料读透，把题目类型、交付形态、要不要附件和镜像 tar 这些能从目录和源码里看出来的自己定下来，只把真正推不出来的拿来问——而且问之前先说明查到了什么，再用结构化提问（Codex 的 `request_user_input`、Claude Code 的 AskUserQuestion）给出直白选项和推荐项。缺端口、启动命令、Flag 路径这类会卡住构建的信息时不会自己猜着往下做。
+材料可以是题目设计、只有源码的目录，或者带旧 Dockerfile 的历史题目。它先把材料读透，把题目类型、交付形态、要不要附件和镜像 tar 这些能从目录和源码里看出来的自己定下来，只把真正推不出来的拿来问。问之前先说明查到了什么，再用结构化提问（Codex 的 `request_user_input`、Claude Code 的 AskUserQuestion）给出直白选项和推荐项。缺端口、启动命令、Flag 路径这类会卡住构建的信息时不会自己猜着往下做。
 
 难度不用提醒。它默认会去反推原题难度再动手；确实需要降级时，会先给出反推结论再问，不会拿"要不要保持现状"当选项。
 
@@ -96,9 +96,9 @@ Web-残影/
 └── 附件/                 # 选手附件，需要时才有
 ```
 
-纯附件题没有镜像相关文件，只有 `README/`、`src/`、`附件/`、`solve/`。`镜像/` 在需要导出镜像 tar 时才建。
+纯附件题没有镜像相关文件，只有 `README/`、`src/`、`附件/`、`solve/`，按需加 `last/`。`镜像/` 在需要导出镜像 tar 时才建。
 
-交付目录是一份白名单：容器题只允许 `src/`、`Dockerfile`、`start.sh`、`challenge.yaml`、`flag`、`README/`、`solve/`，按需加 `附件/`、`镜像/`；RDG 题再加 `check/`、`changeflag.sh`、`ttyd` 这些题目真正运行需要的文件。`verify.sh`、`verify-report.json`、`*.verify.json`、`.DS_Store`、`__pycache__/` 一律不许留下，`verify.sh` 会扫出来。验证报告写到系统临时目录：
+交付目录是一份白名单：容器题只允许 `src/`、`Dockerfile`、`start.sh`、`challenge.yaml`、`flag`、`README/`、`solve/`，按需加 `附件/`、`镜像/`、`last/`；RDG 题再加 `check/`、`changeflag.sh`、`ttyd` 这些题目真正运行需要的文件。`verify.sh`、`verify-report.json`、`*.verify.json`、`.DS_Store`、`__pycache__/` 一律不许留下，`verify.sh` 会扫出来。验证报告写到系统临时目录：
 
 ```bash
 bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes --report "$(mktemp -d)/verify.json"
@@ -122,11 +122,12 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes --report
 | 1.8 题目设计 | **搬运优先** | 需要理解设计动机 |
 | 1.9 解题步骤 | **搬运优先** | 需要真打通链路 |
 
-判断部分按三档处理：
+判断部分按四档处理：
 
 1. **出题人材料**（赛事归档、出题人交付包、官方题解、旧题目录里的设计文档）直接搬进来整理，不留 TODO。
-2. **外部 writeup / 战队 WP** 只能当线索，写进手册前必须在本次交付环境里复跑核对——注入点、参数形态、触发顺序、工具装法都可能和本题不一致。
-3. **确实没有来源**才在该节正文写 `TODO(人工填写)`，并在交付说明里点名哪几节空着。
+2. **外部 writeup / 战队 WP** 只能当线索，写进手册前必须在本次交付环境里复跑核对：注入点、参数形态、触发顺序、工具装法都可能和本题不一致。
+3. **本次交付自己实测的链路**：按 `solve/solve.py` 真打通了，实测过的注入点、payload、触发顺序就是可靠来源，可以写进 1.8/1.9。
+4. **确实没有来源**才在该节正文写 `TODO(人工填写)`，并在交付说明里点名哪几节空着。
 
 **不许编。**「考察 Web 请求分析、服务端输入处理」这类句子读起来像内容，实际什么也没说，还会把空位掩盖掉。
 
@@ -134,13 +135,13 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes --report
 
 写作过程中可以在每节末尾放 `<!-- -->` 注释写指引，交付前全部删掉，`grep -c '<!--'` 必须是 `0`。
 
-`verify.sh` 检查文件名、章节骨架、事实字段和启动命令，**不检查判断部分的内容**——脚本查不出内容真假，假装能查只会让人把"章节齐全"当成"手册写完"。有 TODO 残留时判 `partial`，这是正常结论，如实报告就行，不要为了跑到 `passed` 去编内容。
+`verify.sh` 检查文件名、章节骨架、事实字段和启动命令，**不检查判断部分的内容**，脚本查不出内容真假，假装能查只会让人把"章节齐全"当成"手册写完"。有 TODO 残留时判 `partial`，这是正常结论，如实报告就行，不要为了跑到 `passed` 去编内容。
 
 完整写法和范例见 [references/manual.md](src/CloverSec-CTF-Pack/references/manual.md)。不写"常见失败现象"一节。
 
 ## RDG 防守题
 
-RDG 的判据不是"能不能拿到 Flag"，而是"漏洞还在不在"，交付物和验证方式都和普通题不同：
+RDG 的判据是"漏洞还在不在"。交付物和验证方式都和普通题不同：
 
 - 多一个 `check/` 目录（`check.sh` + `check.py` + `requirements.txt`），平台点"验证"时跑的就是它。调用方式 `./check.sh <IP> <PORT>`，返回 0 表示已修复、非 0 表示漏洞还在，输出里必须有 `ok: True/False` 或 `RESULT: PASS/FAIL` 判定行。
 - 多一个 ttyd 服务，选手通过浏览器进容器改代码。
@@ -161,7 +162,7 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes
 
 | 参数 | 用途 |
 |---|---|
-| `--no-cache` | 构建时禁用缓存。**交付前最后一轮必须带**——带缓存会复用旧层和旧数据卷，建表 SQL 报错、依赖装错都被掩盖 |
+| `--no-cache` | 构建时禁用缓存。**交付前最后一轮必须带**。带缓存会复用旧层和旧数据卷，建表 SQL 报错、依赖装错都被掩盖 |
 | `--ready-cmd CMD` | 端口监听后再执行的就绪命令，返回 0 才算真可用。QEMU 题必用（端口一开就判"已就绪"会把 solve 的时间预算吃在启动上） |
 | `--ready-timeout N` | 等就绪命令的秒数 |
 | `--similarity` | 对同批目录的手册做雷同度检查（只提示，不改结论）。默认关闭 |
@@ -170,7 +171,7 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes
 | `--solve-timeout N` | 解题超时秒数，QEMU/LLM 类题调大 |
 | `--keep` | 跑完保留容器和镜像，便于排查 |
 
-除运行之外还会检查：手册文件名/骨架/1.5 字段/同节号重复/串题、`challenge.yaml` 能不能真解析、provenance 取值与 `name` 一致性、交付目录白名单、敏感数据与生产凭据、`src/` 和附件里的 flag 残留、镜像 tar 与当前构建是否一致、硬链接、`start.sh` 有没有写 flag、首页是不是错误页或占位内容、页面有没有引外网 CDN、`solve.py` 的依赖能不能导入。其中**带"提醒"性质的只打提示、不改结论**。
+除运行之外还会检查：手册文件名/骨架/1.5 字段/同节号重复/串题、`challenge.yaml` 能不能真解析、provenance 取值与 `name` 一致性、交付目录白名单、敏感数据与生产凭据、`src/` 和附件里的 flag 残留、硬链接、`start.sh` 有没有写 flag、首页是不是错误页或占位内容、页面有没有引外网 CDN、`solve.py` 的依赖能不能导入。其中**带"提醒"性质的只打提示、不改结论**。
 
 ```text
 == 构建镜像 (linux/amd64)
@@ -194,7 +195,7 @@ bash ~/.agents/skills/cloversec-ctf-pack/scripts/verify.sh ./ssti-notes
 RDG 题的输出换成 check 判定：
 
 ```text
-== 阶段: handbook: passed provenance: passed delivery: passed build: passed startup: passed flag_write: skipped dynflag_bash: skipped port: passed check_initial: ok: False
+== 阶段: handbook: passed provenance: passed delivery: passed build: passed startup: passed flag_write: skipped port: passed check_initial: ok: False
 == 结果: passed
 ```
 
@@ -246,7 +247,7 @@ provenance:
 
 平台的动态 Flag 是**用 `/bin/bash` 执行一段注入脚本**的：出题人在后台填 `flag_script`，平台把它塞进容器叫 `/changeflag.sh`，然后 `/bin/bash /changeflag.sh` 执行。只有 MySQL socket 未就绪这类错误会重试（最多 30 次），缺 bash、权限拒绝第一次就放弃。
 
-**镜像里没有 `/bin/bash`，Flag 就写不进去**，而且失败是静默的——选手拿到占位值，平台只提示"环境启动异常"。alpine 系镜像要显式 `RUN apk add --no-cache bash`；distroless / scratch 只能用静态 Flag。
+**镜像里没有 `/bin/bash`，Flag 就写不进去**，而且失败是静默的，选手拿到占位值，平台只提示"环境启动异常"。alpine 系镜像要显式 `RUN apk add --no-cache bash`；distroless / scratch 只能用静态 Flag。
 
 `verify.sh` 构建后会探测这一项，缺了直接判 `failed`。
 
@@ -262,7 +263,7 @@ printf '%s\n' "$new_flag" > /flag
 chmod 444 /flag
 ```
 
-目标路径不是 `/flag` 时改最后两行；要同步数据库、配置文件、QEMU rootfs 时在 `printf` 后面接命令。**不要做耗时操作**——平台的重试只对 MySQL socket 未就绪这类错误生效（最多 30 次），缺 bash、权限拒绝第一次就放弃。
+目标路径不是 `/flag` 时改最后两行；要同步数据库、配置文件、QEMU rootfs 时在 `printf` 后面接命令。**不要做耗时操作**。平台的重试只对 MySQL socket 未就绪这类错误生效（最多 30 次），缺 bash、权限拒绝第一次就放弃。
 
 手册 1.5 要把这段原文写进去，出题人直接复制。
 
@@ -272,7 +273,7 @@ chmod 444 /flag
 
 ### flag.path
 
-必须是**程序实际读取的那个文件**——先打开源码找到读 Flag 的那一行再填：
+必须是**程序实际读取的那个文件**，先打开源码找到读 Flag 的那一行再填：
 
 | 题型 | 常用路径 |
 |---|---|
@@ -285,7 +286,7 @@ chmod 444 /flag
 
 程序要在每次请求时读取 Flag 文件。启动时读一次存进变量（Python 模块级变量、Java `static` 块、fork 前 import 的模块），平台换了 Flag 也不会生效；`verify.sh` 换第二个 Flag 再解一次就是为了抓这个。
 
-平台写入还**晚于服务启动**（实测多数 1~4 秒，偶发 61 秒）。要把 Flag 搬进配置文件、数据库或 QEMU guest 的题，必须等"平台真的写完了"，不能只判文件存在——模板见 [references/special.md](src/CloverSec-CTF-Pack/references/special.md)。
+平台写入还**晚于服务启动**（实测多数 1~4 秒，偶发 61 秒）。要把 Flag 搬进配置文件、数据库或 QEMU guest 的题，必须等"平台真的写完了"，不能只判文件存在，模板见 [references/special.md](src/CloverSec-CTF-Pack/references/special.md)。
 
 `solve.py` 不许假设 Flag 的长度和字符集。真实踩过的坑：只认 `flag{` 前缀、39 字符因向下取整少一位、`&` 被 XML 转义成 `&amp;`。
 

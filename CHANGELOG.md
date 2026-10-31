@@ -2,6 +2,40 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.13 - 2026-10-31
+
+用真实产物回归（AI-81 81 题、数信杯 20 题、EXP-23 8 题、甘肃电信 18 题）量化了误报率，修掉 5 处确定性误报 + 按用户决定调整 3 条判定。
+
+### 修复
+
+- **flag 残留检查的 516 个噪声文件**：正则「任意 token + {」把内联 CSS（`body{…}`）、f-string 拼 HTML（`n{item}`）、SQL 里的 JSON 全当成 flag。改成只认 `flag/ctf/dasflag` 前缀。
+- **`password =` 变量名被判生产凭据**：`password = _get_kv(...)`、`String password = params.get(...)` 全被误报。改成只认 `=` 右边是引号字面量。
+- **start.sh 写 flag 的注释/日志误判**：注释里引用平台命令、日志里的 `/root/flag` 被当成覆盖。改成先剥行内注释，且要求重定向紧跟路径。
+- **目录形态漏了 AWD 现场打包**：`题目镜像/ + attachment/ + check.py + source/ + 手册(带括号)` 没被识别。改成只要有 `题目镜像/` 目录就按比赛归档跳过。
+
+### 判定调整（按用户决定）
+
+- **`name` 与目录名不一致降为提示**：历史题大量用短 id（asi-01、redis-topk），实际没采纳「name 必须等于中文目录名」，报 partial 只会淹没真问题。
+- **`original_material` 路径检查降为提示**：它记的是「出题人手里的原始材料清单」，写上游仓库路径（dvlaa/modules/xx.py）而交付目录里没有，是正常的上游来源引用，不是错。
+- **`attachment_only` 保持 failed**：v6.3.0 已废弃的取值，还写的题要改。
+- **1.6 端口写法放宽**：`127.0.0.1 的 8099 端口`、只写 `0.0.0.0` 都算写了端口。
+- **PII/凭据扫描降为提示**：只提示不改结论。
+- **数据来源统一为四档**：出题人材料、外部 writeup、本次交付实测、留 TODO（manual.md 和 README 之前只有三档）。
+
+### 文档
+
+- CHANGELOG 里错误插入的 `## Unreleased` 并回 `## v6.3.0`。
+- README 删掉已废弃的「镜像 tar 一致性检查」表述。
+- 中英 README 仓库结构注释、白名单 `last/`、RDG 样例阶段、数据来源四档、`challenge.yaml` 示例 `name` 统一。
+- SKILL.md 补「solve 不许有本地文件/docker exec 兜底」。
+- 清理文档里的破折号和对仗句（README/SKILL/references 全部，代码注释保留）。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- 三个 CI 步骤本地全部通过。
+- 真实产物：AI-81 抽检告警从每题 3-5 条降到 1-2 条，且剩下的都是 `attachment_only`（真问题）或上游引用提示。
+
 ## v6.3.12 - 2026-10-31
 
 用真实产物做回归时发现的一批误报，大多是检查写得过严。样本：AI-81 的 81 道、数信杯的 20 道。
@@ -271,10 +305,10 @@
 - `--similarity` 在 AI-81-DVLAA 81 题上实测：精准标出 9 份套模板手册（0.61~0.66），其余 72 份零误报。
 - 三个 CI 步骤本地全部通过：attachment fixture、container static checks、6.3.5 additions。
 
-## Unreleased
+## v6.3.0 - 2026-10-13
+
 
 ### 修复
-
 - 手册 1.5、1.6 的事实字段改成只在本节正文里匹配。原来是对整份手册 grep，1.5 空着但 1.9 顺口提了一句"flag 文件位置"也能过，空着的节没人发现。
 - 附件题手册的 1.6 不再要求写「端口 / 账号 / 地址」。附件题本来就没有这些字段，按 manual.md 的要求写清附件清单反而被判 `partial`。
 - 附件题手册的 1.5 接受静态 Flag（「平台覆盖方式：无」）和 RDG 无 Flag 合同（敏感目标不是 `/flag`）两种写法，不再拿容器题的字段去卡。
@@ -286,21 +320,10 @@
 - `verify.sh` 改用 `docker buildx build --load` 构建，和手册里让用户写的那条命令一致；只有经典构建器时退回 `docker build`。
 
 ### 变更
-
 - `SKILL.md` 自检清单第 11 条去掉 `--chown`。`dockerfiles.md` 写明 `COPY --chown` 经典构建器也支持，两处原来互相矛盾。
 - `SKILL.md` 自检清单第 12 条补上「多服务后台起主服务后 wait」，并写清 `verify.sh` 对第 3、4、5、9、12、14 条的实际覆盖范围，第 10、11、13 条靠人读。
 - `allowed-tools` 加回 `Task` 和 `AskUserQuestion`。跳过提问规则要在 Claude Code 里用 AskUserQuestion，批量交付要派子 Agent，原来的列表把这两样排除在外。
 - `SKILL.md` 写明白名单同时接受 `last/` 和 `lasted/`，和 `verify.sh` 一致。
-
-### CI
-
-- 新增容器题静态检查回归 9 项：手册事实字段只在节内匹配、附件题 1.6 不要求端口、`start.sh` 的 `exec`/`wait`、`COPY .` 拦截、CRLF、缺 shebang、手册文件名、`--port` 非数字。
-- 新增 VERSION 与 CHANGELOG 最新条目一致性检查；打 tag 时再检查 tag 名和 VERSION 一致。
-
-## v6.3.0 - 2026-10-13
-
-### 变更
-
 - 迁移旧题时默认反推原题难度并原样恢复，开工第一步写难度基线：漏洞类型、链路、服务拓扑、运行时版本。从题目设计出新题时，基线就是设计稿。
 - 降级清单改成表格，补上服务层替换：nginx+php-fpm 换成 `php:*-apache`、换数据库、升级运行时大版本都要先问用户。
 - 平台只收单容器时，把原题每个服务原样装进同一镜像，新增 `provenance.service_parity` 记录逐服务对照。
@@ -318,6 +341,10 @@
 - `references/special.md` 重写多服务一节，Linux-QEMU 补 Flag 同步校验清单。
 - SKILL.md 补回 verify.sh 的跑法和各结论的处理方式；去掉与 references 重复的 Dockerfile 范例。
 - `agents/openai.yaml` 的描述和指引同步难度恢复。
+
+### CI
+- 新增容器题静态检查回归 9 项：手册事实字段只在节内匹配、附件题 1.6 不要求端口、`start.sh` 的 `exec`/`wait`、`COPY .` 拦截、CRLF、缺 shebang、手册文件名、`--port` 非数字。
+- 新增 VERSION 与 CHANGELOG 最新条目一致性检查；打 tag 时再检查 tag 名和 VERSION 一致。
 
 ### verify.sh
 

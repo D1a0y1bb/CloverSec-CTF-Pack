@@ -232,17 +232,17 @@ jobs:
           bash "$V" "$D" > "$W/b.log" 2>&1 || true
           grep -q 'provenance.status 取值不合法' "$W/b.log"
 
-          # c) name 与目录名不一致 → partial
+          # c) name 与目录名不一致 → 只提示（历史题常用短 id，不判 partial）
           D="$W/c"; mk "$D" c dep_ok
           printf 'challenge:\n  name: wrong-name\n  expose_ports: ["80"]\nprovenance:\n  status: original_adapter\n  verify: passed\n' > "$D/challenge.yaml"
           bash "$V" "$D" > "$W/c.log" 2>&1 || true
           grep -q '和交付目录名' "$W/c.log"
 
-          # d) original_material 列了不存在的文件 → partial
+          # d) original_material 里的路径不在交付目录 → 只提示（上游引用正常）
           D="$W/d"; mk "$D" d dep_ok
           printf 'challenge:\n  name: d\n  expose_ports: ["80"]\nprovenance:\n  status: original_adapter\n  original_material: [missing.sql]\n  verify: passed\n' > "$D/challenge.yaml"
           bash "$V" "$D" > "$W/d.log" 2>&1 || true
-          grep -q '不存在的文件' "$W/d.log"
+          grep -q '不在交付目录' "$W/d.log"
 
           # e) --ready-timeout 非数字 → 退出码 2
           D="$W/e"; mk "$D" e dep_ok

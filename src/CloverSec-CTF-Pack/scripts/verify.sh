@@ -361,10 +361,16 @@ assert_handbook() {
   for sec in 1.1 1.2 1.3 1.4 1.5 1.6 1.7 1.8 1.9; do
     grep -qE "^#+[[:space:]]*${sec}[[:space:]]" "$expected" || missing+=("$sec")
   done
+  # 附件题实际有三种写法，都认：
+  #   1. 九节齐全（有些人懒得顺延）
+  #   2. 去掉 1.7 部署方式、编号顺延（缺 1.9）
+  #   3. 去掉 1.7、保留 1.8/1.9 的编号（AI-81 和 EXP-23 那批就是这种）
   local skeleton="九节"
   if [ ${#missing[@]} -gt 0 ]; then
     if [ "$is_container" = 0 ] && [ ${#missing[@]} -eq 1 ] && [ "${missing[0]}" = 1.9 ]; then
       skeleton="八节（附件题顺延）"
+    elif [ "$is_container" = 0 ] && [ ${#missing[@]} -eq 1 ] && [ "${missing[0]}" = 1.7 ]; then
+      skeleton="八节（附件题去掉 1.7）"
     else
       stage handbook failed
       fail "手册缺章节：${missing[*]}。骨架见 references/manual.md"
@@ -559,11 +565,17 @@ assert_provenance() {
       [ -e "$m" ] && continue
       # 裸文件名和带斜杠的路径都可能在 src/ 下（`dvlaa/content/x.py` → `src/dvlaa/content/x.py`）。
       # 按「根目录 / src/ / solve/ / 附件目录 / 题目源码/ 任一命中」判定。
-      for _d in src solve 附件 题目附件 题目源码 镜像 题目镜像; do
+      for _d in src solve 附件 题目附件 题目源码 镜像 题目镜像 README/参考资料; do
         [ -e "$_d/$m" ] && continue 2
       done
-      # 文档里的泛指词不算路径
-      case "$m" in 源码|题目源码|设计稿|原始材料|附件) continue;; esac
+      # 泛指词、外部引用、出题侧不交付的证据，都不当路径核对。
+      case "$m" in
+        源码|题目源码|设计稿|原始材料|附件|题目手册|官方题解|官方验证脚本|原始|README.md|UPSTREAM-README.md|exp.py)
+          continue;;
+        "VM 资产") continue;;
+      esac
+      # 研究文档（pdf/md，带作者括注）只提示，不判缺失。
+      case "$m" in *.pdf|*.PDF) hint "original_material 里的研究文档 ${m} 不在交付目录，这是出题侧引用，不影响交付"; continue;; esac
       # 只记下不存在的，留给下面统一报
       PROV_MISSING_MATERIAL+=("$m")
     done < <(awk '
@@ -571,14 +583,16 @@ assert_provenance() {
       inb && /^[[:space:]]*-/ { v=$0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); gsub(/["'\'']/, "", v); print v; next }
       inb && $0 !~ /^[[:space:]]*$/ { inb=0 }
     ' challenge.yaml)
+    # original_material 是「出题人手里的原始材料清单」，不是「交付目录里必须存在的文件」。
+    # 写的是上游仓库路径（dvlaa/modules/xx.py）却不在交付目录，是正常的上游来源引用，不是错。
+    # 只提示，不判 partial。
     if [ ${#PROV_MISSING_MATERIAL[@]} -gt 0 ]; then
-      stage provenance partial
-      partial "provenance.original_material 列了交付目录里不存在的文件：${PROV_MISSING_MATERIAL[*]}。要么补上材料，要么从列表里删掉——审查里出现过『声称原样保留、实际路径不存在』"
+      hint "provenance.original_material 里这些路径不在交付目录：${PROV_MISSING_MATERIAL[*]}。可能是上游仓库来源引用（正常），也可能是声称保留却漏了。确认一下即可"
     fi
-    # name 必须等于目录名，否则命名链断裂。
+    # name 和目录名不一致时只提示。历史交付物大量用短 id（asi-01、redis-topk），
+    # 用户实际没有采纳「name 必须等于中文目录名」这条，报 partial 只会淹没真问题。
     if [ -n "$YAML_NAME" ] && [ "$YAML_NAME" != "$(basename "$PROJECT")" ]; then
-      stage provenance partial
-      partial "challenge.yaml 的 name（${YAML_NAME}）和交付目录名（$(basename "$PROJECT")）不一致。目录名是主名，其余四处从它派生"
+      hint "challenge.yaml 的 name（${YAML_NAME}）和交付目录名（$(basename "$PROJECT")）不一致。规范要求目录名是主名、其余五处派生，但历史题常用短 id，这条仅提示"
     fi
     case " ${NOTES[*]+"${NOTES[*]}"} " in
       *"provenance"*) stage provenance partial ;;
@@ -620,10 +634,12 @@ if [ ! -f Dockerfile ] && [ ! -f start.sh ] && [ ! -f challenge.yaml ]; then
     hint "这是比赛现场的打包成品。附件题没有可执行验证，确认附件能在干净环境打开即可"
     finish
   fi
-  if [ -d 题目源码 ] || [ -d 题目手册 ]; then
+  # AWD 现场打包形态：题目镜像/ + attachment/ + check.py + source/ + 设计文档 + 手册(带括号)。
+  # 只要有 题目镜像/ 目录就按比赛归档跳过，不苛求 题目源码/题目手册 的目录名。
+  if [ -d 题目镜像 ] || [ -d 题目源码 ] || [ -d 题目手册 ]; then
     echo "   比赛归档：$(ls -d 题目镜像 题目源码 题目手册 2>/dev/null | tr '\n' ' ')"
     stage delivery skipped
-    hint "这是比赛归档形态（镜像/源码/手册分开放），不是出题阶段的交付包"
+    hint "这是比赛归档形态（镜像/源码/手册分开放），不是出题阶段的交付包。要重新出题时按 SKILL.md 的交付目录结构重组"
     finish
   fi
   # 附件题：只有 附件/（或 题目附件/）+ solve/，没有容器
@@ -791,11 +807,12 @@ if [ -f start.sh ]; then
   fi
   # 平台注入脚本会自己写 flag，start.sh 再写一遍会打架：要么把平台写的值覆盖掉，
   # 要么在反序执行时把占位值写死。真实交付里 10 道题踩了这条。
-  FLAG_WRITE_LINES=$(grep -vE '^[[:space:]]*#' start.sh \
-    | grep -nE '(>|>>)[[:space:]]*[^[:space:]]*flag|chmod[[:space:]]+[0-7]+[[:space:]]+[^[:space:]]*flag|printf[^|]*/[^[:space:]]*flag' \
+  # 先剥掉行内注释再查，避免把注释里引用的平台命令、日志里的 /root/flag 当覆盖。
+  # 只认重定向（> / >>）紧跟 flag 路径，或 chmod 紧跟 flag 路径。
+  FLAG_WRITE_LINES=$(sed 's/[[:space:]]*#.*$//' start.sh \
+    | grep -nE '(>|>>)[[:space:]]*/?[^[:space:]]*flag|chmod[[:space:]]+[0-7]+[[:space:]]+/?[^[:space:]]*flag' \
     2>/dev/null | head -3)
   if [ -n "$FLAG_WRITE_LINES" ]; then
-    stage hygiene partial
     hint "start.sh 里在写或改 flag 文件：${FLAG_WRITE_LINES//$'\n'/; }。平台注入的脚本自己会写 Flag，start.sh 再写一遍会覆盖或写死占位值。只有「平台用环境变量传 Flag」和「题目按原设计生成静态 Flag」两个例外，其余删掉"
   fi
   # 只为四叶草平台出的题不需要环境变量兼容段，照抄模板会把别的平台的合同带进交付物。
@@ -816,8 +833,8 @@ if [ -d src ] || [ -d 附件 ] || [ -d 题目附件 ]; then
     --include='*.py' --include='*.java' --include='*.js' --include='*.env' \
     --include='*.xml' --include='*.txt' --include='*.html' --include='*.log' \
     --include='*.ini' --include='*.sh' --include='*.jsp' --include='*.cfg' \
-    -e '密码[[:space:]]*[:=][[:space:]]*[^[:space:]]{4,}' \
-    -e 'password[[:space:]]*[:=][[:space:]]*[^[:space:]]{4,}' \
+    -e '密码[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{4,}["'"'"']' \
+    -e 'password[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{4,}["'"'"']' \
     -e 'passwd[[:space:]]*[:=]' \
     -e 'AKIA[0-9A-Z]{16}' \
     -e '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' \
@@ -826,23 +843,31 @@ if [ -d src ] || [ -d 附件 ] || [ -d 题目附件 ]; then
     | head -5)
   if [ -n "$PII_HITS" ]; then
     stage hygiene partial
-    partial "src/ 或 附件/ 里疑似有生产凭据或密钥，交付前逐条确认（都是发给选手的）：
+    hint "src/ 或 附件/ 里疑似有生产凭据或密钥，交付前逐条确认（都是发给选手的）：
 $(printf '%s\n' "$PII_HITS" | sed 's/^/     /')"
   fi
   # src/ 和 附件/ 里的 flag 形态字符串：出题人的测试残留会随镜像发给选手。
   # 真实事故：src/cache/trace.json 带真 flag 进了镜像；附件 test.py 明文写着真 flag。
   # 排掉明显的占位/提示串（FLAG_NOT_WRITTEN、PLACEHOLDER、TODO 等），只报像真值的。
   # 只看"去掉占位词之后还剩不剩"，占位词一大堆的整串不算。
+  # 只认 flag/ctf/dasflag 前缀。之前用「任意 token + {」会把内联 CSS（body{…}）、
+  # f-string 拼 HTML（n{item}）、SQL 里的 JSON（{"inputType":…}）全当成 flag，516 个纯噪声文件。
   FLAG_RESIDUE=""
-  for f in $(grep -rIlE '[A-Za-z0-9_]+\{[^}]{8,}\}' src 附件 题目附件 2>/dev/null | grep -v '\.md$' | head -40); do
-    [ -n "$(grep -oE '[A-Za-z0-9_]+\{[^}]{8,}\}' "$f" 2>/dev/null \
-      | grep -viE 'placeholder|not_written|not-written|change_?me|your_|example|dummy|fake|todo|xxxx|:[0-9]*[ds]\}|\{[A-Z_]+\}')" ] \
+  for f in $(grep -rIlE '(flag|ctf|dasflag)\b[^\n]*\{[^}]{8,}\}' src 附件 题目附件 2>/dev/null | grep -v '\.md$' | head -40); do
+    [ -n "$(grep -oiE '(flag|ctf|dasflag)\b[^\n]*\{[^}]{8,}\}' "$f" 2>/dev/null \
+      | grep -viE 'placeholder|not_written|not-written|change_?me|your_|example|dummy|fake|todo|xxxx|flag_placeholder')" ] \
       && FLAG_RESIDUE="$FLAG_RESIDUE $f"
   done
   FLAG_RESIDUE=$(printf '%s' "$FLAG_RESIDUE" | tr ' ' '\n' | grep -v '^$' | head -5 | tr '\n' ' ')
   if [ -n "$FLAG_RESIDUE" ]; then
-    stage hygiene partial
-    hint "这些文件里有 flag 形态的字符串：$(printf '%s ' $FLAG_RESIDUE)。确认是占位值不是测试残留——真实 flag 随镜像发给选手，题目就白给了"
+    if [ -f Dockerfile ]; then
+      # 容器题：src/ 会进镜像，真 flag 跟着发给选手。
+      hint "这些文件里有 flag 形态的字符串：$(printf '%s ' $FLAG_RESIDUE)。确认是占位值不是测试残留——容器题里真 flag 随镜像发给选手，题目就白给了"
+    else
+      # 附件题：src/ 不发给选手（附件题只发 附件/），src 里留测试残留不泄题，
+      # 但要确认 附件/ 里没有。
+      hint "这些文件里有 flag 形态的字符串：$(printf '%s ' $FLAG_RESIDUE)。附件题里 src/ 不发给选手，不影响；但 附件/ 里出现的话就是泄题"
+    fi
   fi
 
   # 真实 PII：证件号、手机号密度高的数据文件。单条不算，文件里成批出现才报。
@@ -851,7 +876,7 @@ $(printf '%s\n' "$PII_HITS" | sed 's/^/     /')"
     src 附件 题目附件 2>/dev/null | head -3)
   if [ -n "$PII_BULK" ]; then
     stage hygiene partial
-    partial "这些文件里成批出现手机号形态的数据，确认不是真实客户 PII：$(printf '%s ' $PII_BULK)。真实 PII 必须换成合成数据，并在 provenance 记一笔"
+    hint "这些文件里成批出现手机号形态的数据，确认不是真实客户 PII：$(printf '%s ' $PII_BULK)。真实 PII 必须换成合成数据，并在 provenance 记一笔"
   fi
 fi
 

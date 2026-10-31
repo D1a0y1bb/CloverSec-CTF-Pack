@@ -95,7 +95,7 @@ wait "$MAIN_PID"
 ```
 
 - 第 5 段只在 Flag 存在数据库或配置文件里时需要；Flag 直接从 `/flag` 读的题删掉第 5 段，最后一行改成 `exec` 主服务。
-- **同步失败要能看见。** 不要写 `|| true` 把错误吞掉，也不要把目标文件设成 `chmod 444`——下一轮同步会写不进去，选手拿到的永远是占位值。
+- **同步失败要能看见。** 不要写 `|| true` 把错误吞掉，也不要把目标文件设成 `chmod 444`。下一轮同步会写不进去，选手拿到的永远是占位值。
 - 后台服务不要把日志重定向到 `/tmp/*.log`，排查时 `docker logs` 看不到。
 - 主服务是 `catalina.sh run`、`apache2-foreground` 这类前台命令时，第 4 段把它放后台即可。
 - 排查时用 `verify.sh <题目目录> --keep` 保留容器，再 `docker logs -f <容器>` 看所有进程的输出。
@@ -119,7 +119,7 @@ wait "$MAIN_PID"
 
 ## 资源纪律（会伤到用户本机）
 
-批量做 AI 题时镜像动辄 2~7 GB。**禁止 `docker system prune`、`docker system prune -af --volumes`、`docker image prune -a` 这类全量清理**——用户本机上其它项目的镜像和卷会被一起删掉。真实事故：一次 `docker system prune -af --volumes` 删掉了本机全部镜像和 12 个卷，约 65 GB。
+批量做 AI 题时镜像动辄 2~7 GB。**禁止 `docker system prune`、`docker system prune -af --volumes`、`docker image prune -a` 这类全量清理**，用户本机上其它项目的镜像和卷会被一起删掉。真实事故：一次 `docker system prune -af --volumes` 删掉了本机全部镜像和 12 个卷，约 65 GB。
 
 允许的清理方式：
 
@@ -171,8 +171,8 @@ AI 题常见的失败不是代码写错，是模型跑不起来。
 - 温度默认 `0`（或题目设计明确要求的多轮采样，把次数写进 1.9）。
 - 题目里用到的随机标识符（`SECURE_TAG` 之类）要固定化，不要随机生成后靠运气。
 - 判分判据要落在**可枚举的副作用**上（工具真的被调用了、数据库真的被改了），不要依赖模型输出的措辞。
-- `solve.py` 允许有限次重试，把重试次数和判据写进 1.9。用户接受「AI 题有概率性」，但要求「能正常作答」——验收标准是"重试 N 次内必中"，不是"单次必中"。
-- **模型替换会改变难度**。0.5B 直接拒绝、3B 更保守、1.5B 才通——这类方向是反直觉的，任何"越大越好/越安全越好"的排序都会错。换模型要在同样的判据下实测对比，结论写进 `provenance.preserved`。
+- `solve.py` 允许有限次重试，把重试次数和判据写进 1.9。用户接受「AI 题有概率性」，但要求「能正常作答」。验收标准是"重试 N 次内必中"，不是"单次必中"。
+- **模型替换会改变难度**。0.5B 直接拒绝、3B 更保守、1.5B 才通，这类方向是反直觉的，任何"越大越好/越安全越好"的排序都会错。换模型要在同样的判据下实测对比，结论写进 `provenance.preserved`。
 
 ## 设计不完整的题（需要补全）
 
@@ -193,7 +193,7 @@ AI 题常见的失败不是代码写错，是模型跑不起来。
 
 ## RDG / AWD / AWDP / SecOps
 
-这些是对抗/运维类赛制，和普通题的根本区别是：**判据不是"选手能不能拿到 Flag"，而是"漏洞还在不在"**。选手要进容器改代码把漏洞修掉，平台跑 check 脚本判断修好没有。
+这些是对抗/运维类赛制，和普通题的根本区别是：**判据是"漏洞还在不在"**。选手要进容器改代码把漏洞修掉，平台跑 check 脚本判断修好没有。
 
 ### 交付形态
 
@@ -345,7 +345,7 @@ flag_write      skipped  （没有 Flag 合同）
 bash <本 Skill 目录>/scripts/verify.sh <题目目录>
 ```
 
-拿到 `ok: False`（初始环境有漏洞）是**通过**；拿到 `ok: True` 反而说明题目初始状态不对——漏洞初始就修好了，选手没得打——要报出来。
+拿到 `ok: False`（初始环境有漏洞）是**通过**；拿到 `ok: True` 反而说明题目初始状态不对：漏洞初始就修好了，选手没得打。要报出来。
 
 **判题脚本没能执行会判 `failed`，不算"有漏洞"。** 退出码 126（没有执行权限）、127（路径或命令找不到），以及返回非 0 但输出里没有 `ok: False` / `RESULT: FAIL` 判定行的（`check.py` 缺依赖崩掉这类），都按配置错误处理。`check` 路径写错、`check.sh` 忘了 `chmod +x` 时返回码恰好非 0，不单独判掉就会被当成 RDG 的预期结果。
 
@@ -366,7 +366,7 @@ RDG 手册的重点和普通题不同，见 [manual.md](manual.md)：
 
 内核 CVE/LPE 题，用 QEMU 起 guest。常见形态是**容器里塞一个 QEMU**：平台只看到一个容器，guest 在容器内部的 QEMU 里跑。
 
-这类题的 Flag 在 guest 内部，host 层的 `changeflag.sh` 只写 host 文件、guest 看不到——Flag 要写进 rootfs（或 FAT 分区），或者由 guest 的启动脚本从共享位置读。
+这类题的 Flag 在 guest 内部，host 层的 `changeflag.sh` 只写 host 文件、guest 看不到，Flag 要写进 rootfs（或 FAT 分区），或者由 guest 的启动脚本从共享位置读。
 
 ### Flag 同步等待（这个模板是实测出来的）
 
@@ -446,7 +446,7 @@ wait_for_platform_flag "${FLAG_FILE}" "${FLAG_WAIT_TIMEOUT}" || true
 RUN printf '%s' "$(cat /flag)" | sha256sum | cut -d' ' -f1 > /opt/static-flag.sha256
 ```
 
-运行期比 sha256，不要比明文——明文在镜像里，选手能读。没写这个文件的题，`is_platform_flag` 退化成只校验格式，仍然能用。
+运行期比 sha256，不要比明文。明文在镜像里，选手能读。没写这个文件的题，`is_platform_flag` 退化成只校验格式，仍然能用。
 
 ### Flag 同步的校验清单
 
@@ -485,7 +485,7 @@ QEMU 题跑得慢是正常的，但**慢不是结论**。看到解题超时，�
 
 ### 其他实测要点
 
-- 串口用 QEMU 自带的 TCP 监听（`-chardev socket,...` + `-serial chardev:char0`），不要自己写 pty 转发——客户端断开后容易卡住不再出数据。
+- 串口用 QEMU 自带的 TCP 监听（`-chardev socket,...` + `-serial chardev:char0`），不要自己写 pty 转发，客户端断开后容易卡住不再出数据。
 - QEMU 需要 KVM 时，`verify.sh` 默认的 `docker run` 不带 `--device`。用 `--run-arg --device=/dev/kvm` 补上；没有 KVM 走 TCG 会慢好几倍。
 - 一个容器里跑两个 QEMU 实例时，两个小问要并发解，串行必然超时。
 
@@ -526,4 +526,4 @@ chmod 444 "$TARGET"
 
 ### 不同名，避免和平台注入的撞车
 
-题目自己的 helper 建议改名叫 `/sync-flag.sh` 之类，不要叫 `/changeflag.sh`——平台注入的那个会被 `rm -rf`，你的文件如果同名会被一起删掉。
+题目自己的 helper 建议改名叫 `/sync-flag.sh` 之类，不要叫 `/changeflag.sh`，平台注入的那个会被 `rm -rf`，你的文件如果同名会被一起删掉。
