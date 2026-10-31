@@ -2,6 +2,24 @@
 
 本项目的重要变更都会记录在本文件中。
 
+## v6.3.16 - 2026-10-31
+
+发布后用 4 个子 Agent + DeepSeek 实测暴露的 bug。
+
+### 修复
+
+- **`section_body` 不识别代码块围栏**：用 awk 提取手册各节正文时，把 flag_script 模板里的 `# 平台注入时…` 注释当成 markdown 标题，导致代码块之后的「读取时机」「$new_flag」字段读不到，照官方手册模板写反而误判 partial。改成跳过 ``` 围栏内的行。
+- **`COPY .` 检查跨平台失效**：`grep -viE '--from='` 在 BSD grep 和 GNU grep 里都把 `--from=` 当长选项报错，导致 COPYDOT 恒空、检查被跳过。改用 `grep -viE -e '--from='`。
+- **`.tar` 目录报 passed**：只含 tar 的打包成品目录给绿色 passed 但什么都没验证，是假信号。改成 partial，明确「未验证」。
+- **端口探测时序竞态**：对「等 flag 写完再起服务」的题（Skill 推荐的 Flag 同步等待模式），verify.sh 先等端口再写 flag 的顺序会导致端口永远等不到、误报「端口没监听」。改成端口 none 时写 flag 后再等 15 秒，给服务起的机会。
+- **QEMU 环境失败归因不全**：端口超时 + 出题人已在 provenance.env_limited 声明本机跑不动时，仍判成题目 failed。改成归为 environment_failed。
+
+### 验证
+
+- `bash -n` 通过，`shellcheck -S warning` 无警告。
+- 三个 CI 步骤本地全部通过。
+- 4 个子 Agent 实测：容器题、附件题、打包成品、从零做新题、排查坏题，除上述 bug 外全部正常。
+
 ## v6.3.15 - 2026-10-31
 
 发版前最后一轮（代码 + 文档两个 Agent 审查）的收尾。
