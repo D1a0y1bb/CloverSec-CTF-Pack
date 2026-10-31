@@ -387,7 +387,9 @@ assert_handbook() {
   # 容器题查端口和账号；附件题没有端口，按 manual.md 只要求写清发了哪些附件，
   # 所以只要求本节有内容，不要求出现"端口 / 账号 / 地址"这些它本来就没有的字段。
   if [ "$is_container" = 1 ]; then
-    printf '%s' "$sec16" | grep -qE '端口|账号|地址' \
+    # 写 `http://127.0.0.1:8080/` 或 `127.0.0.1:5020` 比写"端口：8080"信息更全，
+    # 也要认，不能只匹配"端口/账号/地址"这三个词。
+    printf '%s' "$sec16" | grep -qE '端口|账号|地址|https?://|[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{2,5}|:[0-9]{2,5}\b|ssh |nc ' \
       || fact_missing+=("1.6 题目情况（端口 / 账号 / 地址）")
   else
     [ -n "$(printf '%s' "$sec16" | tr -d '[:space:]')" ] \
@@ -436,13 +438,21 @@ assert_handbook() {
     return
   fi
   # 手册里出现同级别的题目的 name，说明是复制粘贴串了。
-  # 同批其他题目的 name。太短的名字（Web、Pwn、某）不参与比对，否则任何手册里写
-  # "Web 页面"都会误报。长度按字符算，不按字节——1 个汉字是 3 字节，用 awk 会漏掉这个区分。
+  # 同批其他题目的 name，用来发现"手册里混进了别的题的内容"。
+  # 三个坑都要避开，否则误报比真报多：
+  #   1. 自己那份要排掉——按 challenge.yaml 的 name 排，不是按目录名（两者常常不同）
+  #   2. name 里可能有空格（`What is hikvision`），不能按空格截断取第一个词
+  #   3. 太短的名字（Web、Pwn、某）不参与比对，任何手册都会写到这些词
   if [ -d "${PROJECT}/.." ]; then
+    SELF_NAME=$(sed -nE 's/^[[:space:]]*name:[[:space:]]*(.*)$/\1/p' challenge.yaml 2>/dev/null \
+      | head -1 | sed -E 's/[[:space:]]+#.*$//; s/^["'\'']//; s/["'\'']$//')
     OTHER_NAMES=$(for f in "${PROJECT}/../"*/challenge.yaml; do
       [ -f "$f" ] || continue
-      sed -nE 's/^[[:space:]]*name:[[:space:]]*["'\'']?([^"'"'"'[:space:]]+).*/\1/p' "$f" | head -1
-    done | grep -vx "$(basename "$PROJECT")" \
+      # 排掉本目录自己的 yaml
+      [ "$(cd "$(dirname "$f")" && pwd)" != "$PROJECT" ] || continue
+      sed -nE 's/^[[:space:]]*name:[[:space:]]*(.*)$/\1/p' "$f" | head -1 \
+        | sed -E 's/[[:space:]]+#.*$//; s/^["'\'']//; s/["'\'']$//'
+    done | grep -vxF "$SELF_NAME" 2>/dev/null \
       | python3 -c 'import sys
 for line in sys.stdin:
     line = line.rstrip("\n")
@@ -462,7 +472,8 @@ for line in sys.stdin:
   SEC15=$(section_body 1.5 "$expected")
   if [ -n "$SEC15" ]; then
     # 动态 Flag 题：1.5 必须贴出含 $new_flag 的 flag_script，否则平台后台存不进去（阻断级）。
-    if [ "${STATIC_FLAG:-0}" = 0 ] && [ -f challenge.yaml ]; then
+    # 附件题没有容器、平台也不写 Flag，1.5 只要求写「平台覆盖方式：无」，不按容器题的四项卡。
+    if [ "${STATIC_FLAG:-0}" = 0 ] && [ -f challenge.yaml ] && [ "$is_container" = 1 ]; then
       if ! printf '%s' "$SEC15" | grep -q '\$new_flag'; then
         # 1.5 里已经给了等价的平台写入命令时不算缺——历史题常写 docker exec 形态。
         if printf '%s' "$SEC15" | grep -qiE 'docker[[:space:]]+exec|flag_script|平台覆盖方式[：:][[:space:]]*[^无]'; then
@@ -487,7 +498,8 @@ for line in sys.stdin:
       fi
     fi
     # 动态/静态声明要和 flag.mode 一致。
-    if printf '%s' "$SEC15" | grep -qE '平台覆盖方式[：:][[:space:]]*无'; then
+    # 只对容器题查：附件题本来就没有平台写 Flag 这回事，不需要写 flag.mode。
+    if [ "$is_container" = 1 ] && printf '%s' "$SEC15" | grep -qE '平台覆盖方式[：:][[:space:]]*无'; then
       [ "${STATIC_FLAG:-0}" = 0 ] && [ -f challenge.yaml ] && {
         stage handbook partial
         partial "手册 1.5 写「平台覆盖方式：无」，但 challenge.yaml 没写 flag.mode: static。两处要一致"
@@ -495,7 +507,12 @@ for line in sys.stdin:
     fi
   fi
   echo "   手册 $(basename "$expected") ${skeleton}齐全，无待填项"
-  stage handbook passed
+  # 前面 1.5/串题那些检查如果有 partial，别再把它盖成 passed——报告 JSON 的 stages
+  # 和最终 status 对不上，下游按 stages 判断会漏。
+  case " ${NOTES[*]+"${NOTES[*]}"} " in
+    *"手册"*) stage handbook partial ;;
+    *) stage handbook passed ;;
+  esac
 }
 
 # provenance 是必填的，写成 pending 或者 verify 空着等于把"没证据"伪装成"待整理"。
@@ -532,20 +549,21 @@ assert_provenance() {
     PROV_MISSING_MATERIAL=()
     while IFS= read -r m; do
       [ -n "$m" ] || continue
+      # 条目后面常带中文括注（`src/ICPV2（ICP 备案系统 webapp 原始目录）`），先剥掉再判。
+      m=${m%%（*}; m=${m%%(*}
+      m=$(printf '%s' "$m" | sed -E 's/[[:space:]]+$//')
+      [ -n "$m" ] || continue
       case "$m" in
         http://*|https://*|/*) continue;;   # 外部引用和绝对路径不核对
       esac
       [ -e "$m" ] && continue
-      # original_material 里常写裸文件名（P86_exploit.py），实际在 src/ 或 solve/ 里，
+      # 裸文件名和带斜杠的路径都可能在 src/ 下（`dvlaa/content/x.py` → `src/dvlaa/content/x.py`）。
       # 按「根目录 / src/ / solve/ / 附件目录 / 题目源码/ 任一命中」判定。
-      case "$m" in
-        */*) ;;   # 带路径的只在根目录核对
-        *)
-          for _d in src solve 附件 题目附件 题目源码 镜像 题目镜像; do
-            [ -e "$_d/$m" ] && continue 2
-          done
-          ;;
-      esac
+      for _d in src solve 附件 题目附件 题目源码 镜像 题目镜像; do
+        [ -e "$_d/$m" ] && continue 2
+      done
+      # 文档里的泛指词不算路径
+      case "$m" in 源码|题目源码|设计稿|原始材料|附件) continue;; esac
       # 只记下不存在的，留给下面统一报
       PROV_MISSING_MATERIAL+=("$m")
     done < <(awk '
@@ -562,7 +580,10 @@ assert_provenance() {
       stage provenance partial
       partial "challenge.yaml 的 name（${YAML_NAME}）和交付目录名（$(basename "$PROJECT")）不一致。目录名是主名，其余四处从它派生"
     fi
-    stage provenance passed
+    case " ${NOTES[*]+"${NOTES[*]}"} " in
+      *"provenance"*) stage provenance partial ;;
+      *) stage provenance passed ;;
+    esac
   fi
 }
 
@@ -741,14 +762,14 @@ if [ "$DELIVERY" = passed ]; then
   HARDLINK=$(find "$PROJECT" -type f -links +1 -print 2>/dev/null | head -5)
   if [ -n "$HARDLINK" ]; then
     DELIVERY=partial
-    hint "交付目录里有硬链接文件（多包共享同一 inode），单独复制这个包会丢内容。逐个 cp 一遍即可拆开：$(printf '%s ' $HARDLINK)"
+    DELIVERY=partial; partial "交付目录里有硬链接文件（多包共享同一 inode），单独复制这个包会丢内容。逐个 cp 一遍即可拆开：$(printf '%s ' $HARDLINK)"
   fi
 fi
 if [ "$DELIVERY" = passed ]; then
   # 选手附件必须是能独立打开的：0 字节、坏 zip、macOS 垃圾都算。
   if [ -d 附件 ]; then
     EMPTY_ATT=$(find 附件 -type f -size 0 -print 2>/dev/null | head -3)
-    [ -n "$EMPTY_ATT" ] && hint "附件里有 0 字节文件：$(printf '%s ' $EMPTY_ATT)，选手拿到也解不了"
+    [ -n "$EMPTY_ATT" ] && { DELIVERY=partial; partial "附件里有 0 字节文件：$(printf '%s ' $EMPTY_ATT)，选手拿到也解不了"; }
     MACOS_JUNK=$(find 附件 \( -name '__MACOSX' -o -name '.DS_Store' \) -print 2>/dev/null | head -3)
     [ -n "$MACOS_JUNK" ] && hint "附件里带 macOS 打包垃圾：$(printf '%s ' $MACOS_JUNK)。在 Linux 上重打，或清除后再交付"
   fi
@@ -991,7 +1012,13 @@ if [ ! -f Dockerfile ]; then
         tail -15 "$SOLVELOG" | sed 's/^/   | /'
         stage solve failed; fail "解题命令返回 ${SOLVE_SRC}"
       else
-        SOLVED=$(grep -oE '[A-Za-z0-9_]+\{[^}]{4,}\}' "$SOLVELOG" | head -1)
+        # 题目可能先打印诱饵旗、后打印真旗，取第一个会对不上。输出里任一匹配等于 expect 就算过。
+        SOLVED=""
+        while IFS= read -r _cand; do
+          [ -n "$_cand" ] || continue
+          if [ -n "$EXPECT_FLAG" ] && [ "$_cand" = "$EXPECT_FLAG" ]; then SOLVED="$_cand"; break; fi
+          [ -n "$SOLVED" ] || SOLVED="$_cand"
+        done < <(grep -oE '[A-Za-z0-9_]+\{[^}]{4,}\}' "$SOLVELOG")
         if [ -z "$SOLVED" ]; then
           tail -15 "$SOLVELOG" | sed 's/^/   | /'
           stage solve failed; fail "解题命令的输出里没有 Flag"
@@ -1019,7 +1046,9 @@ if [ ! -f Dockerfile ]; then
   fail "没有 Dockerfile，也不是附件题（没有 附件/ 和 solve/solve.py）"; finish
 fi
 # COPY . 会把 solve/、README/、附件/、镜像/ 一起打进镜像，路径也会变，直接拦下来。
-if grep -qiE '^[[:space:]]*(COPY|ADD)[[:space:]]+(--[^[:space:]]+[[:space:]]+)*\./?[[:space:]]' Dockerfile; then
+# COPY --from=builder . /app/ 拷的是构建阶段产物，不是构建上下文，不会把 solve/README/ 打进镜像。
+if grep -qiE '^[[:space:]]*(COPY|ADD)[[:space:]]+(--[^[:space:]]+[[:space:]]+)*\./?[[:space:]]' Dockerfile \
+   && ! grep -qiE '^[[:space:]]*(COPY|ADD)[[:space:]]+.*--from=' Dockerfile; then
   fail "Dockerfile 用了 COPY . ，会把 solve/、README/、附件/ 打进镜像，并且改变目录结构，改成 COPY 具体路径"; finish
 fi
 
@@ -1113,39 +1142,6 @@ if ! "${BUILD_CMD[@]}" --platform "$PLATFORM" -t "$IMAGE" . >"$BUILDLOG" 2>&1; t
 fi
 echo "   完成，用时 $(( $(date +%s) - T0 )) 秒"
 stage build passed
-
-# ---------- 交付的镜像 tar 必须和当前构建一致
-# 真实事故：改了 Dockerfile/start.sh 之后忘了重新 docker save，镜像/ 里的 tar 还是旧的
-# （start.sh 里还带着 touch /flag），平台按 tar 导入部署时改动全不生效，而 verify 只 build 不 load，看不出来。
-# 判据：docker image inspect 的 Id 与 tar manifest.json 里 Config 的末段必须一致。
-if [ -d 镜像 ] || [ -d 题目镜像 ]; then
-  TAR_DIR=""; [ -d 镜像 ] && TAR_DIR=镜像; [ -z "$TAR_DIR" ] && [ -d 题目镜像 ] && TAR_DIR=题目镜像
-  CUR_ID=$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null | sed 's/^sha256://')
-  for t in "$TAR_DIR"/*.tar; do
-    [ -f "$t" ] || continue
-    # 先读 index.json 的 digest —— 启用 containerd 镜像存储（docker info 的 Driver 不是 overlay2）
-    # 时，docker save 出的是 OCI 布局，只有 index.json 的 digest 才等于 image inspect 的 .Id。
-    # manifest.json 里的 Config 是 config blob 摘要，和 .Id 天然不等，拿它比会 100% 误报。
-    TAR_ID=$(tar -xOf "$t" index.json 2>/dev/null \
-      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["manifests"][0]["digest"])' 2>/dev/null \
-      | sed 's/^sha256://')
-    if [ -z "$TAR_ID" ]; then
-      # 退回经典布局：manifest.json 的 Config
-      TAR_ID=$(tar -xOf "$t" manifest.json 2>/dev/null \
-        | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0].get("Config",""))' 2>/dev/null \
-        | sed 's/\.json$//; s/^.*\///')
-    fi
-    if [ -z "$TAR_ID" ]; then
-      # 两个都读不出来：不是 docker save 的产物（rootfs 导出件之类），平台 docker load 不进去。
-      partial "$(basename "$t") 不是 docker save 的产物（读不出 manifest/index），平台 docker load 不进去。确认这个 tar 是怎么生成的"
-      continue
-    fi
-    case "$CUR_ID" in
-      "$TAR_ID"*) ;;
-      *) hint "$(basename "$t") 和当前构建不一致（tar ${TAR_ID:0:12}… vs 当前 ${CUR_ID:0:12}…）。改了 Dockerfile/start.sh/src 之后要重新 docker save，否则平台按 tar 部署时改动不生效" ;;
-    esac
-  done
-fi
 
 # 官方 php/nginx/node 镜像的 docker-*entrypoint 会把参数原样 exec，不影响 /start.sh；其他 ENTRYPOINT 会吞掉它。
 ENTRY=$(docker image inspect -f '{{json .Config.Entrypoint}}' "$IMAGE" 2>/dev/null)

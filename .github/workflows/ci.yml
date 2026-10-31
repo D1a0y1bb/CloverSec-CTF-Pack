@@ -23,6 +23,11 @@ jobs:
         with:
           node-version: "20"
 
+      # verify.sh 用 yaml.safe_load 真解析 challenge.yaml。没装 PyYAML 时会退回文本匹配，
+      # provenance 枚举校验和 name 一致性检查会静默失效，所以 CI 里显式装上。
+      - name: Setup PyYAML
+        run: python3 -m pip install --quiet pyyaml && python3 -c "import yaml; print('pyyaml', yaml.__version__)"
+
       - name: Shell check
         run: |
           bash -n src/CloverSec-CTF-Pack/scripts/verify.sh
